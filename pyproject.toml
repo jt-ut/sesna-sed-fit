@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sesnasedfit"
+version = "0.1.0"
+description = "Tools for fitting SESNA sources to template SED models using Robitaille's SED Fitter package"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Josh Taylor", email = "joshtaylor@utexas.edu"}
+]
+maintainers = [
+    {name = "Josh Taylor", email = "joshtaylor@utexas.edu"}
+]
+keywords = [
+    "SESNA", 
+    "SED Fitting", 
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20.0",
+    "matplotlib>=3.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "mypy",
+    "jupyter",
+]
+docs = [
+    "sphinx",
+    "sphinx-rtd-theme",
+    "numpydoc",
+]
+test = [
+    "pytest>=6.0",
+    "pytest-cov",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/struct-syn-hddata"
+Repository = "https://github.com/yourusername/struct-syn-hddata"
+Documentation = "https://struct-syn-hddata.readthedocs.io"
+Issues = "https://github.com/yourusername/struct-syn-hddata/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+structsynhddata = ["data/*.json"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]

@@ -1,0 +1,41 @@
+Metadata-Version: 2.4
+Name: sesnasedfit
+Version: 0.1.0
+Summary: Tools for fitting SESNA sources to template SED models using Robitaille's SED Fitter package
+Author-email: Josh Taylor <joshtaylor@utexas.edu>
+Maintainer-email: Josh Taylor <joshtaylor@utexas.edu>
+License: MIT
+Project-URL: Homepage, https://github.com/yourusername/struct-syn-hddata
+Project-URL: Repository, https://github.com/yourusername/struct-syn-hddata
+Project-URL: Documentation, https://struct-syn-hddata.readthedocs.io
+Project-URL: Issues, https://github.com/yourusername/struct-syn-hddata/issues
+Keywords: SESNA,SED Fitting
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Mathematics
+Classifier: Topic :: Scientific/Engineering :: Information Analysis
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.20.0
+Requires-Dist: matplotlib>=3.3.0
+Provides-Extra: dev
+Requires-Dist: pytest>=6.0; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: flake8; extra == "dev"
+Requires-Dist: mypy; extra == "dev"
+Requires-Dist: jupyter; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: sphinx; extra == "docs"
+Requires-Dist: sphinx-rtd-theme; extra == "docs"
+Requires-Dist: numpydoc; extra == "docs"
+Provides-Extra: test
+Requires-Dist: pytest>=6.0; extra == "test"
+Requires-Dist: pytest-cov; extra == "test"

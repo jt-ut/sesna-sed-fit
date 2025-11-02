@@ -1,0 +1,1331 @@
+"""
+SED fitting utilities for SESNA SEDFIT package.
+
+This module provides functions for performing Spectral Energy Distribution (SED)
+fitting on Spitzer SESNA catalog sources using the sedfitter package. It handles
+model fitting with multiple model grids, extinction corrections, and result
+management.
+
+Functions
+---------
+impute_missing_flux
+    Create flux arrays with missing observations imputed from model fluxes.
+fit_source
+    Fit a single source using one or more model grids with extinction.
+extract_fitres
+    Extract fit results from a FitInfo object into a dictionary.
+merge_fitres
+    Merge two sets of fit results, keeping the best N fits by chi-squared.
+load_fitterobj
+    Initialize Fitter objects from parameter files and model directories.
+"""
+
+from sedfitter.fit import Fitter
+from sedfitter.extinction import Extinction
+from sedfitter.source import Source
+import numpy as np
+import pandas as pd
+import astropy.units as u
+from copy import deepcopy
+
+from . import io
+
+
+# ## Define filters and apertures for SESNA bands 
+# apertures = [2.4,  2.4,  2.4,  2.4,  2.4,  2.4,  2.4,  7.6] * u.arcsec
+# filters =  ['2MASS/2MASS.J', '2MASS/2MASS.H', '2MASS/2MASS.Ks', 'Spitzer/IRAC.I1', 'Spitzer/IRAC.I2', 'Spitzer/IRAC.I3', 'Spitzer/IRAC.I4', 'Spitzer/MIPS.24mu']
+
+
+
+def impute_missing_flux(fitinfo):
+    """
+    Create flux arrays with missing observations imputed from model fluxes.
+    
+    For each fit, creates a flux array where:
+    - Bands with valid==1 (good detections) use the observed source flux
+    - Bands with valid!=1 (missing/upper limits) use the model flux (converted from log)
+    
+    This is useful for visualizing or analyzing what the full SED would look like
+    if the model predictions were correct for unobserved bands.
+    
+    Parameters
+    ----------
+    fitinfo : FitInfo object
+        Fitter results containing:
+        - .model_fluxes : [N_fits x N_bands] array of log10(model fluxes)
+        - .source.flux : [N_bands] array of observed fluxes (linear scale)
+        - .source.valid : [N_bands] array of validity flags (1=valid, 3=upper limit, etc.)
+    
+    Returns
+    -------
+    imputed_fluxes : numpy.ndarray
+        Array of shape [N_fits x N_bands] containing flux values (linear scale)
+        with missing values imputed from model predictions.
+    
+    Examples
+    --------
+    >>> info = fitter.fit(source)
+    >>> imputed = impute_missing_flux(info)
+    >>> # imputed[0, :] contains the complete SED for the best fit
+    """
+    # Start with model fluxes (convert from log to linear scale)
+    imputed_fluxes = 10**fitinfo.model_fluxes.value.copy()
+    
+    # Get validity mask (True where observations are valid)
+    is_valid = fitinfo.source.valid == 1
+    
+    # For valid bands, replace model flux with observed flux
+    imputed_fluxes[:, is_valid] = fitinfo.source.flux[is_valid]
+    
+    return imputed_fluxes
+
+
+# def fit_source(src, fitterobj, fitparm, extparm, nkeep=10):
+#     """
+#     Fit a single source using one or more model grids with extinction.
+    
+#     This function handles the complete fitting workflow for a single source,
+#     including:
+#     1. Converting source data to sedfitter Source object
+#     2. Setting up extinction (A_V) range (absolute or catalog-based)
+#     3. Running fits with one or more model grids
+#     4. Merging results and keeping the best N fits overall
+    
+#     Parameters
+#     ----------
+#     src : dict
+#         Source dictionary containing:
+#         - 'SOURCE_ASCII': ASCII string formatted for sedfitter
+#         - 'AK': A_K extinction value (used for catalog-based A_V ranges)
+#     fitterobj : Fitter or list of Fitter
+#         Single Fitter instance or list of Fitters (one per model grid).
+#         If a list, results from all grids are merged.
+#     fitparm : dict
+#         Fit parameters dictionary (from read_fitparm) containing:
+#         - 'av_range': Either ['absolute', min, max] or ['catalog', offset]
+#         - 'model_category': Category label for this model set
+#     extparm : dict
+#         Extinction parameters dictionary (from read_extinction_info) containing:
+#         - 'AV_over_AK': Ratio to convert A_K to A_V
+#     nkeep : int, optional
+#         Number of best-fit models to keep (default: 10).
+    
+#     Returns
+#     -------
+#     dict
+#         Merged fit results containing the top nkeep fits sorted by chi-squared.
+#         See extract_fitres for dictionary structure.
+    
+#     Notes
+#     -----
+#     When av_range is 'catalog', the A_V range is computed as:
+#         A_V_center = src['AK'] * extparm['AV_over_AK']
+#         A_V_range = [max(0, A_V_center - offset), A_V_center + offset]
+    
+#     Examples
+#     --------
+#     >>> src = {'SOURCE_ASCII': 'J123456 180.0 30.0 ...', 'AK': 1.5}
+#     >>> fitparm = {'av_range': ['catalog', 5.0], 'model_category': 'YSO'}
+#     >>> extparm = {'AV_over_AK': 8.9}
+#     >>> results = fit_source(src, fitter, fitparm, extparm, nkeep=10)
+#     """
+#     ## Convert single fitter to list for uniform handling
+#     if not isinstance(fitterobj, list):
+#         fitterobj = [fitterobj]
+    
+#     ## Initialize merged results
+#     merged_fits = None
+    
+#     ## Loop over all fitters
+#     for fitter in fitterobj:
+        
+#         ## Initialize this source object
+#         s = Source.from_ascii(src['SOURCE_ASCII'])
+        
+#         ## Handle AV range logic
+#         if fitparm['av_range'][0] == 'absolute':
+#             info = fitter.fit(s)
+#         elif fitparm['av_range'][0] == 'catalog':
+#             fittercopy = deepcopy(fitter)
+#             av_center = src['AK'] * extparm['AV_over_AK']
+#             av_offset = fitparm['av_range'][1]
+#             av_range_tmp = [
+#                 np.max([0, av_center - av_offset]),
+#                 av_center + av_offset
+#             ]
+#             fittercopy.av_range = av_range_tmp
+#             info = fittercopy.fit(s)
+        
+#         ## Keep top fits from this fitter
+#         #info.sort() # Robitaille's fitting routine already sorts before returning 
+#         info.keep(('N', nkeep))
+        
+#         ## Extract fit results
+#         fitres = extract_fitres(info, fitparm)
+        
+#         ## Merge with running best
+#         merged_fits = merge_fitres(merged_fits, fitres, nkeep)
+    
+#     return merged_fits
+
+def fit_source(src, fitterobj, fitparm, extparm, nkeep=10):
+    """
+    Fit a single source using one or more model grids with extinction.
+    
+    This function handles the complete fitting workflow for a single source,
+    including:
+    1. Converting source data to sedfitter Source object
+    2. H-band normalization for GAL models (models normalized to H-band = 1)
+    3. Setting up extinction (A_V) range (absolute or catalog-based)
+    4. Running fits with one or more model grids
+    5. Un-normalizing results back to physical units
+    6. Merging results and keeping the best N fits overall
+    
+    Parameters
+    ----------
+    src : dict
+        Source dictionary containing:
+        - 'SOURCE_ASCII': ASCII string formatted for sedfitter
+        - 'AK': A_K extinction value (used for catalog-based A_V ranges)
+    fitterobj : Fitter or list of Fitter
+        Single Fitter instance or list of Fitters (one per model grid).
+        If a list, results from all grids are merged.
+    fitparm : dict
+        Fit parameters dictionary (from read_fitparm) containing:
+        - 'av_range': Either ['absolute', min, max] or ['catalog', offset]
+        - 'model_category': Category label for this model set
+    extparm : dict
+        Extinction parameters dictionary (from read_extinction_info) containing:
+        - 'AV_over_AK': Ratio to convert A_K to A_V
+    nkeep : int, optional
+        Number of best-fit models to keep (default: 10).
+    
+    Returns
+    -------
+    dict
+        Merged fit results containing the top nkeep fits sorted by chi-squared.
+        See extract_fitres for dictionary structure.
+    
+    Notes
+    -----
+    When av_range is 'catalog', the A_V range is computed as:
+        A_V_center = src['AK'] * extparm['AV_over_AK']
+        A_V_range = [max(0, A_V_center - offset), A_V_center + offset]
+    
+    Galaxy Model Normalization:
+    When fitparm['model_category'] == 'GAL', the galaxy model templates are
+    normalized such that H-band = 1. The fitting process:
+    1. Normalizes the source fluxes/errors by dividing by H-band flux
+    2. Fits the normalized source to normalized models
+    3. Un-normalizes the results (source and model fluxes) back to physical units
+    This ensures correct fitting while maintaining physical flux scales in outputs.
+    
+    Examples
+    --------
+    >>> src = {'SOURCE_ASCII': 'J123456 180.0 30.0 ...', 'AK': 1.5}
+    >>> fitparm = {'av_range': ['catalog', 5.0], 'model_category': 'YSO'}
+    >>> extparm = {'AV_over_AK': 8.9}
+    >>> results = fit_source(src, fitter, fitparm, extparm, nkeep=10)
+    """
+    ## Convert single fitter to list for uniform handling
+    if not isinstance(fitterobj, list):
+        fitterobj = [fitterobj]
+    
+    ## Initialize merged results
+    merged_fits = None
+    
+    ## Loop over all fitters
+    for fitter in fitterobj:
+        
+        ## Initialize this source object
+        s = Source.from_ascii(src['SOURCE_ASCII'])
+        
+        ## PHASE 1: Normalize for GAL models (models are normalized to H-band = 1)
+        if fitparm['model_category'] == 'GAL':
+            h_flux = s.flux[1]  # H-band is index 1 (band order: J, H, Ks, 3.6, 4.5, 5.8, 8.0, 24)
+            
+            # Normalize all fluxes by H-band
+            s.flux = s.flux / h_flux
+            
+            # Normalize errors only for valid detections (valid==1)
+            # Leave upper limit probabilities (valid==3) unchanged
+            valid_mask = (s.valid == 1)
+            s.error[valid_mask] = s.error[valid_mask] / h_flux
+        
+        ## Handle AV range logic
+        if fitparm['av_range'][0] == 'absolute':
+            info = fitter.fit(s)
+        elif fitparm['av_range'][0] == 'catalog':
+            fittercopy = deepcopy(fitter)
+            av_center = src['AK'] * extparm['AV_over_AK']
+            av_offset = fitparm['av_range'][1]
+            av_range_tmp = [
+                np.max([0, av_center - av_offset]),
+                av_center + av_offset
+            ]
+            fittercopy.av_range = av_range_tmp
+            info = fittercopy.fit(s)
+        
+        ## PHASE 2: Un-normalize the fitinfo object (for GAL models)
+        if fitparm['model_category'] == 'GAL':
+            # Un-normalize source fluxes back to physical units
+            info.source.flux = info.source.flux * h_flux
+            
+            # Un-normalize source errors (only valid detections)
+            valid_mask = (info.source.valid == 1)
+            info.source.error[valid_mask] = info.source.error[valid_mask] * h_flux
+            
+            # Un-normalize model fluxes (stored as log10)
+            # Add log10(h_flux) to convert from normalized to physical units
+            info.model_fluxes = info.model_fluxes + np.log10(h_flux)
+        
+        ## Keep top fits from this fitter
+        info.sort()
+        info.keep(('N', nkeep))
+        
+        ## Extract fit results
+        fitres = extract_fitres(info, fitparm)
+        
+        ## Merge with running best
+        merged_fits = merge_fitres(merged_fits, fitres, nkeep)
+    
+    return merged_fits
+
+
+def extract_fitres(fitinfo, fitparm):
+    """
+    Extract fit results from a FitInfo object into a structured dictionary.
+    
+    Converts sedfitter's FitInfo object into a dictionary with numpy arrays
+    for easier manipulation and storage. Handles conversion of astropy Quantities
+    to plain numpy arrays and log-to-linear flux conversions.
+    
+    Parameters
+    ----------
+    fitinfo : FitInfo object
+        Fitter results object containing fit parameters and model information.
+    fitparm : dict
+        Fit parameters dictionary containing:
+        - 'model_category': Category label to store with results
+    
+    Returns
+    -------
+    dict
+        Dictionary containing fit results with keys:
+        - 'ID': Source identifier (str)
+        - 'CHI2': Chi-squared values [N_fits] (numpy array)
+        - 'NVALID': Number of valid detections (int)
+        - 'MODEL_FLUX': Model fluxes [N_fits x N_bands] in linear scale (numpy array)
+        - 'IMPUTED_FLUX': Observed+imputed fluxes [N_fits x N_bands] (numpy array)
+        - 'AV': Visual extinction A_V values [N_fits] (numpy array)
+        - 'SC': Scale factors [N_fits] (numpy array)
+        - 'MODEL_CAT': Model category label (str)
+        - 'MODEL_DIR': Model directory paths [N_fits] (numpy array of strings)
+        - 'MODEL_ID': Model IDs [N_fits] (numpy array)
+        - 'MODEL_NAME': Model names [N_fits] (numpy array of strings)
+    
+    Examples
+    --------
+    >>> info = fitter.fit(source)
+    >>> fitparm = {'model_category': 'YSO'}
+    >>> results = extract_fitres(info, fitparm)
+    >>> print(results['CHI2'])  # Chi-squared for each fit
+    """
+    ## Extract & return fit values
+    out = {}
+    out['ID'] = fitinfo.source.name
+    out['CHI2'] = fitinfo.chi2.value  # Convert from astropy quantity to numpy
+    out['NVALID'] = sum(fitinfo.source.valid==1)
+    out['MODEL_FLUX'] = 10**fitinfo.model_fluxes.value  # Store linear (not logged) flux
+    out['IMPUTED_FLUX'] = impute_missing_flux(fitinfo)
+    out['AV'] = fitinfo.av.value  # Convert from astropy quantity to numpy
+    #out['SC'] = fitinfo.sc.value  # Convert from astropy quantity to numpy
+    out['SC'] = fitinfo.sc  # Convert from astropy quantity to numpy
+    out['MODEL_CAT'] = fitparm['model_category']
+    out['MODEL_DIR'] = np.array(len(fitinfo.chi2)*[fitinfo.meta.model_dir], dtype='U')
+    out['MODEL_NAME'] = np.array(fitinfo.model_name, dtype='U')
+    out['MODEL_ID'] = fitinfo.model_id
+
+    return out
+
+
+def merge_fitres(fitres1, fitres2, nkeep=10):
+    """
+    Merge two sets of fit results, keeping the best N fits by chi-squared.
+    
+    This function combines results from multiple model grids or fitting runs,
+    sorts by chi-squared, and keeps only the top N best fits. Handles the first
+    iteration case where fitres1 is None.
+    
+    Parameters
+    ----------
+    fitres1 : dict or None
+        First set of fits. If None (first iteration), simply processes fitres2.
+    fitres2 : dict
+        Second set of fits to merge. Must have same keys as fitres1.
+    nkeep : int, optional
+        Number of top fits to keep (default: 10).
+    
+    Returns
+    -------
+    dict
+        Merged dictionary containing the top nkeep fits sorted by chi-squared
+        (lowest chi-squared first). Structure matches fitres1/fitres2.
+    
+    Notes
+    -----
+    The function distinguishes between:
+    - Scalar fields (ID, NVALID, MODEL_CAT): Taken from fitres1, assumed identical
+    - Array fields (CHI2, AV, MODEL_FLUX, etc.): Concatenated and sorted
+    
+    Examples
+    --------
+    >>> fits1 = extract_fitres(info1, fitparm)
+    >>> fits2 = extract_fitres(info2, fitparm)
+    >>> merged = merge_fitres(fits1, fits2, nkeep=10)
+    >>> # merged contains the 10 best fits from both sets
+    
+    >>> # First iteration case
+    >>> merged = merge_fitres(None, fits1, nkeep=10)
+    >>> # merged contains top 10 fits from fits1
+    """
+    # Handle None case (first iteration)
+    if fitres1 is None:
+        # Just trim fitres2 to nkeep if needed
+        n = len(fitres2['CHI2'])
+        if n <= nkeep:
+            return fitres2
+        else:
+            # Sort and keep top nkeep
+            sort_idx = np.argsort(fitres2['CHI2'])[:nkeep]
+            merged = {}
+            for key, val in fitres2.items():
+                if np.ndim(val) == 0 or isinstance(val, str):
+                    # Scalar fields (0-dim arrays or strings)
+                    merged[key] = val
+                else:
+                    # Array fields
+                    merged[key] = val[sort_idx]
+            return merged
+    
+    # Merge: start with scalar/string fields from fitres1
+    merged = {}
+    
+    for key in fitres1.keys():
+        val1 = fitres1[key]
+        val2 = fitres2[key]
+        
+        # Check if scalar (0-dim array or string)
+        if np.ndim(val1) == 0 or isinstance(val1, str):
+            merged[key] = val1  # Just keep from fitres1 (should be same for both)
+        else:
+            # Concatenate arrays (works for numpy arrays and astropy Quantities)
+            merged[key] = np.concatenate([val1, val2], axis=0)
+    
+    # Sort by chi2 and keep top nkeep
+    sort_idx = np.argsort(merged['CHI2'])[:nkeep]
+    
+    # Apply sorting to array fields only
+    for key in merged.keys():
+        val = merged[key]
+        if np.ndim(val) > 0:  # Only sort non-scalar fields
+            merged[key] = val[sort_idx]
+    
+    return merged
+
+
+# def load_fitterobj(fitparm, extparm, default_av_range=[0., 100.]):
+#     """
+#     Initialize Fitter objects from parameter files and model directories.
+    
+#     Creates one or more sedfitter.Fitter objects based on the provided parameters,
+#     with each Fitter corresponding to a model grid directory. Sets up extinction
+#     law, apertures, filters, distance range, and A_V range.
+    
+#     Parameters
+#     ----------
+#     fitparm : dict
+#         Fit parameters dictionary (from read_fitparm) containing:
+#         - 'model_dir': Single path or list of paths to model directories
+#         - 'apertures': List of aperture sizes (arcsec)
+#         - 'filters': List of filter wavelengths (microns)
+#         - 'av_range': Either ['absolute', min, max] or ['catalog', offset]
+#         - 'path_input_hdf5': Path to HDF5 file containing DISTANCE_RANGE_KPC
+#     extparm : dict
+#         Extinction parameters dictionary (from read_extinction_info) containing:
+#         - 'path': Path to extinction law data file
+#         - 'colidx_wav': Column index for wavelength
+#         - 'colidx_extinction': Column index for extinction/opacity
+#     default_av_range : list of float, optional
+#         Default [min, max] A_V range to use when av_range is 'catalog' mode.
+#         Default: [0., 100.]. This is a placeholder since catalog mode computes
+#         source-specific ranges during fitting.
+    
+#     Returns
+#     -------
+#     list of Fitter
+#         List of sedfitter.Fitter objects, one per model directory.
+    
+#     Notes
+#     -----
+#     When fitparm['av_range'][0] == 'catalog':
+#         - Fitters are initialized with default_av_range
+#         - Actual source-specific ranges are computed in fit_source()
+    
+#     When fitparm['av_range'][0] == 'absolute':
+#         - Fitters use the fixed range specified in fitparm['av_range'][1:]
+    
+#     Examples
+#     --------
+#     >>> fitparm = read_fitparm('params.txt')
+#     >>> extparm = read_extinction_info('extinction.info')
+#     >>> fitters = load_fitterobj(fitparm, extparm)
+#     >>> # fitters is a list of Fitter objects ready for fitting
+#     """
+#     # Initialize the fitter object list with a default av_range
+#     # Based on the av_range keyword in the fitparm file, we might use a source specific av_range in the source loop,
+#     # but Fitter needs a value to instantiate so in this case use the given default for now
+
+#     # Build extinction object first. It will be assigned to all fitters in the list
+#     extinction = Extinction.from_file(extparm['path'], columns=(extparm['colidx_wav'], extparm['colidx_extinction']), wav_unit=u.micron, chi_unit=u.cm ** 2 / u.g)
+
+#     # Extract apertures and filters
+#     apertures = fitparm['apertures'] * u.arcsec
+#     filters = fitparm['filters']
+
+#     # Read distances from source hdf5 file
+#     with pd.HDFStore(fitparm['path_input_hdf5']) as store:
+#         distance_range_kpc = store.get('DISTANCE_RANGE_KPC')['DISTANCE_RANGE_KPC'].to_list()
+#     distance_range_kpc = distance_range_kpc * u.kpc
+
+#     # Initialize empty list
+#     fitters = []
+
+#     # Instantiate a fitter obj from each model directory given in fitparm['model_dir'], assign it to the list
+#     for i in fitparm['model_dir']:
+#         # Decide whether we're using a fixed av_range, or a variable one per source
+#         if fitparm['av_range'][0]=='absolute':
+#             av_range = fitparm['av_range'][1:]
+#         else:
+#             av_range = default_av_range
+#         # Instantiate & save fitter object to list
+#         fitters.append(Fitter(filter_names=filters, apertures=apertures,
+#                               model_dir=i,
+#                               extinction_law=extinction,
+#                               distance_range=distance_range_kpc,
+#                               av_range=av_range,
+#                               remove_resolved=True))
+    
+#     return fitters
+
+
+def load_fitterobj(fitparm, extparm, default_av_range=[0., 100.]):
+    """
+    Initialize Fitter objects from parameter files and model directories.
+    
+    Creates one or more sedfitter.Fitter objects based on the provided parameters,
+    with each Fitter corresponding to a model grid directory. Sets up extinction
+    law, apertures, filters, distance range, and A_V range.
+    
+    Parameters
+    ----------
+    fitparm : dict
+        Fit parameters dictionary (from read_fitparm) containing:
+        - 'model_dir': Single path or list of paths to model directories
+        - 'apertures': List of aperture sizes (arcsec)
+        - 'filters': List of filter wavelengths (microns)
+        - 'av_range': Either ['absolute', min, max] or ['catalog', offset]
+        - 'distance_range_kpc': Distance range (loaded automatically by read_fitparm)
+    extparm : dict
+        Extinction parameters dictionary (from read_extinction_info) containing:
+        - 'path': Path to extinction law data file
+        - 'colidx_wav': Column index for wavelength
+        - 'colidx_extinction': Column index for extinction/opacity
+    default_av_range : list of float, optional
+        Default [min, max] A_V range to use when av_range is 'catalog' mode.
+        Default: [0., 100.]. This is a placeholder since catalog mode computes
+        source-specific ranges during fitting.
+    
+    Returns
+    -------
+    list of Fitter
+        List of sedfitter.Fitter objects, one per model directory.
+    
+    Notes
+    -----
+    When fitparm['av_range'][0] == 'catalog':
+        - Fitters are initialized with default_av_range
+        - Actual source-specific ranges are computed in fit_source()
+    
+    When fitparm['av_range'][0] == 'absolute':
+        - Fitters use the fixed range specified in fitparm['av_range'][1:]
+    
+    Examples
+    --------
+    >>> fitparm = read_fitparm('params.txt')
+    >>> extparm = read_extinction_info('extinction.info')
+    >>> fitters = load_fitterobj(fitparm, extparm)
+    >>> # fitters is a list of Fitter objects ready for fitting
+    """
+    # Initialize the fitter object list with a default av_range
+    # Based on the av_range keyword in the fitparm file, we might use a source specific av_range in the source loop,
+    # but Fitter needs a value to instantiate so in this case use the given default for now
+
+    # Build extinction object first. It will be assigned to all fitters in the list
+    extinction = Extinction.from_file(extparm['path'], columns=(extparm['colidx_wav'], extparm['colidx_extinction']), wav_unit=u.micron, chi_unit=u.cm ** 2 / u.g)
+
+    # Extract apertures and filters
+    apertures = fitparm['apertures'] * u.arcsec
+    filters = fitparm['filters']
+
+    # Get distances from fitparm (already loaded by read_fitparm)
+    # This avoids HDF5 file locking issues in parallel processing
+    distance_range_kpc = fitparm['distance_range_kpc'] * u.kpc
+
+    # Initialize empty list
+    fitters = []
+
+    # Instantiate a fitter obj from each model directory given in fitparm['model_dir'], assign it to the list
+    for i in fitparm['model_dir']:
+        # Decide whether we're using a fixed av_range, or a variable one per source
+        if fitparm['av_range'][0]=='absolute':
+            av_range = fitparm['av_range'][1:]
+        else:
+            av_range = default_av_range
+        # Instantiate & save fitter object to list
+        fitters.append(Fitter(filter_names=filters, apertures=apertures,
+                              model_dir=i,
+                              extinction_law=extinction,
+                              distance_range=distance_range_kpc,
+                              av_range=av_range,
+                              remove_resolved=True))
+    
+    return fitters
+
+
+def aggregate_fitresults_to_arrays(fitresultlist):
+    """
+    Convert list of fit result dicts to standardized numpy arrays.
+    
+    Takes a list of fit result dictionaries (one per source) and converts them
+    into a dictionary of numpy arrays with standardized shapes for efficient
+    storage and analysis. Arrays follow a consistent dimensional structure:
+    - 1D: (nsources,) for per-source scalar values
+    - 2D: (nsources, nkeep) for per-fit scalar values
+    - 3D: (nsources, nkeep, nbands) for per-fit per-band values
+    
+    Parameters
+    ----------
+    fitresultlist : list of dict
+        List of fit results, one dict per source. Each dict should have keys:
+        - 'ID': Source identifier (str)
+        - 'NVALID': Number of valid detections (int)
+        - 'MODEL_CAT': Model category (str)
+        - 'CHI2': Chi-squared values, shape (nkeep,)
+        - 'AV': Visual extinction values, shape (nkeep,)
+        - 'SC': Scale factors, shape (nkeep,)
+        - 'MODEL_DIR': Model directory paths, shape (nkeep,)
+        - 'MODEL_NAME': Model names, shape (nkeep,)
+        - 'MODEL_ID': Model IDs, shape (nkeep,)
+        - 'MODEL_FLUX': Model fluxes, shape (nkeep, nbands)
+        - 'IMPUTED_FLUX': Imputed fluxes, shape (nkeep, nbands)
+    
+    Returns
+    -------
+    dict
+        Dictionary with same keys as input dicts, but values are numpy arrays:
+        
+        1D arrays (nsources,):
+            - 'ID': string array
+            - 'NVALID': int array
+            - 'MODEL_CAT': string array
+        
+        2D arrays (nsources, nkeep):
+            - 'CHI2': float array
+            - 'AV': float array
+            - 'SC': float array
+            - 'MODEL_DIR': string array
+            - 'MODEL_NAME': string array
+            - 'MODEL_ID': int array
+        
+        3D arrays (nsources, nkeep, nbands):
+            - 'MODEL_FLUX': float array
+            - 'IMPUTED_FLUX': float array
+    
+    Examples
+    --------
+    >>> fitresultlist = [fit_source(src, fitter, ...) for src in srclist]
+    >>> arrays = aggregate_fitresults_to_arrays(fitresultlist)
+    >>> print(arrays['CHI2'].shape)  # (nsources, nkeep)
+    (10000, 5)
+    >>> print(arrays['MODEL_FLUX'].shape)  # (nsources, nkeep, nbands)
+    (10000, 5, 8)
+    
+    Notes
+    -----
+    String dtype lengths are set to accommodate typical values:
+    - ID: 'U50' (50 characters)
+    - MODEL_CAT: 'U20' (20 characters)
+    - MODEL_DIR: 'U100' (100 characters for paths)
+    - MODEL_NAME: 'U50' (50 characters)
+    
+    Adjust these if your data requires longer strings.
+    """
+    nsources = len(fitresultlist)
+    nkeep = len(fitresultlist[0]['CHI2'])
+    nbands = fitresultlist[0]['MODEL_FLUX'].shape[1]
+    
+    # Initialize output dict with proper shapes and dtypes
+    arrays = {
+        # 1D arrays (per source)
+        'ID': np.empty(nsources, dtype='U50'),
+        'NVALID': np.empty(nsources, dtype=int),
+        'MODEL_CAT': np.empty(nsources, dtype='U20'),
+        
+        # 2D arrays (per source, per fit)
+        'CHI2': np.empty((nsources, nkeep), dtype=float),
+        'AV': np.empty((nsources, nkeep), dtype=float),
+        'SC': np.empty((nsources, nkeep), dtype=float),
+        'MODEL_DIR': np.empty((nsources, nkeep), dtype='U100'),
+        'MODEL_NAME': np.empty((nsources, nkeep), dtype='U50'),
+        'MODEL_ID': np.empty((nsources, nkeep), dtype=int),
+        
+        # 3D arrays (per source, per fit, per band)
+        'MODEL_FLUX': np.empty((nsources, nkeep, nbands), dtype=float),
+        'IMPUTED_FLUX': np.empty((nsources, nkeep, nbands), dtype=float),
+    }
+    
+    # Fill arrays from fitresultlist
+    for i, fitres in enumerate(fitresultlist):
+        # 1D arrays
+        arrays['ID'][i] = fitres['ID']
+        arrays['NVALID'][i] = fitres['NVALID']
+        arrays['MODEL_CAT'][i] = fitres['MODEL_CAT']
+        
+        # 2D arrays
+        arrays['CHI2'][i] = fitres['CHI2']
+        arrays['AV'][i] = fitres['AV']
+        arrays['SC'][i] = fitres['SC']
+        arrays['MODEL_DIR'][i] = fitres['MODEL_DIR']
+        arrays['MODEL_NAME'][i] = fitres['MODEL_NAME']
+        arrays['MODEL_ID'][i] = fitres['MODEL_ID']
+        
+        # 3D arrays
+        arrays['MODEL_FLUX'][i] = fitres['MODEL_FLUX']
+        arrays['IMPUTED_FLUX'][i] = fitres['IMPUTED_FLUX']
+    
+    return arrays
+
+
+## ========================================
+#  PARALLEL FITTING ROUTINES 
+## ========================================
+# Global variables for worker processes
+_fitterlist = None
+_fitparm = None
+_extparm = None
+
+
+def _init_worker(fitparm, extparm):
+    """
+    Initialize worker process for parallel fitting.
+    
+    This function is called once when each worker process starts. It loads
+    the fitter objects and stores parameters in global variables so they
+    don't need to be passed with each source.
+    
+    Parameters
+    ----------
+    fitparm : dict
+        Fit parameters dictionary
+    extparm : dict
+        Extinction parameters dictionary
+    
+    Notes
+    -----
+    This function is used internally by fit_batch_parallel and should not
+    be called directly by users.
+    
+    The fitterlist loading happens once per worker at initialization, not
+    once per source, which significantly reduces overhead.
+    """
+    global _fitterlist, _fitparm, _extparm
+    
+    # Load fitter objects once per worker
+    _fitterlist = load_fitterobj(fitparm, extparm, default_av_range=[0., 100.])
+    _fitparm = fitparm
+    _extparm = extparm
+
+def _fit_single_source_safe(src):
+    """
+    Fit a single source with error handling.
+    
+    Worker function that fits one source using the globally-stored fitter
+    objects. Catches exceptions and returns error information instead of
+    crashing the worker process.
+    
+    Parameters
+    ----------
+    src : dict
+        Source dictionary from read_SESNA_SEDFIT_ascii containing at minimum:
+        - 'SOURCE_ASCII': ASCII string for sedfitter
+        - 'AK': A_K extinction value (if using catalog-based A_V ranges)
+    
+    Returns
+    -------
+    tuple
+        ('success', result_dict) if fitting succeeded
+        ('failure', error_dict) if fitting failed
+        
+        result_dict contains fit results from fit_source()
+        error_dict contains: 'source_id', 'error_type', 'error_message'
+    
+    Notes
+    -----
+    This function is used internally by fit_batch_parallel and should not
+    be called directly by users.
+    """
+    try:
+        # Fit the source using global variables
+        result = fit_source(src, _fitterlist, _fitparm, _extparm, _fitparm['nkeep'])
+        return ('success', result)
+    
+    except Exception as e:
+        # Extract source ID for failure tracking
+        try:
+            # Try to get ID from SOURCE_ASCII (space-separated, ID is first field)
+            source_id = src.get('SOURCE_ASCII', '').split()[0] if 'SOURCE_ASCII' in src else 'UNKNOWN'
+        except (IndexError, AttributeError):
+            source_id = 'UNKNOWN'
+        
+        # Create error record
+        error_info = {
+            'source_id': source_id,
+            'error_type': type(e).__name__,
+            'error_message': str(e)
+        }
+        return ('failure', error_info)
+
+def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
+                       n_workers=30, log_interval=100):
+    """
+    Fit a batch of sources in parallel with detailed logging.
+    
+    Distributes source fitting across multiple worker processes for faster
+    processing. Each worker loads the fitter objects once at initialization,
+    then processes sources as they become available. Progress is logged
+    periodically to both console and a log file.
+    
+    Parameters
+    ----------
+    srclist : list of dict
+        List of source dictionaries from read_SESNA_SEDFIT_ascii.
+    fitparm : dict
+        Fit parameters dictionary containing at minimum:
+        - 'nkeep': Number of best fits to keep per source
+        - 'dir_output': Output directory for log file
+        - 'catalog': Catalog name
+        - 'model_category': Model category
+    extparm : dict
+        Extinction parameters dictionary.
+    startindex : int
+        Starting source index for this batch (used for logging and filenames).
+    endindex : int
+        Ending source index for this batch (used for logging and filenames).
+    n_workers : int, optional
+        Number of parallel worker processes. Default: 30.
+    log_interval : int, optional
+        Print progress update every N sources. Default: 100.
+    
+    Returns
+    -------
+    fitresultlist : list of dict
+        List of successful fit results (one dict per source).
+    failed_sources : list of dict
+        List of failed source info with keys:
+        - 'source_id': Source identifier
+        - 'error_type': Exception type name
+        - 'error_message': Exception message
+    
+    Examples
+    --------
+    >>> srclist = io.read_SESNA_SEDFIT_ascii(fitparm['path_input_hdf5'], 0, 9999)
+    >>> fitresultlist, failed = fit_batch_parallel(srclist, fitparm, extparm, 
+    ...                                              0, 9999, n_workers=30)
+    >>> print(f"Success: {len(fitresultlist)}, Failed: {len(failed)}")
+    
+    Notes
+    -----
+    - Creates a log file: {catalog}_SEDFIT-{model_category}_{start:07d}-{end:07d}.log
+    - Log file contains progress updates and final summary
+    - Worker processes are initialized once and reused for all sources
+    - Memory per worker: ~100-200 MB (fitterlist) + minimal per-source overhead
+    """
+    import time
+    import logging
+    import pandas as pd
+    from multiprocessing import Pool
+    from . import io
+    
+    # Set up logger with dual output (console + file)
+    logger = logging.getLogger(f'batchfit_{startindex}_{endindex}')
+    logger.setLevel(logging.INFO)
+    logger.handlers = []  # Clear any existing handlers
+    
+    # Create formatter
+    formatter = logging.Formatter('%(message)s')
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler
+    fileroot = io.build_batchresults_fileroot(fitparm, startindex, endindex)
+    log_filepath = f"{fileroot}.log"
+    
+    import os
+    os.makedirs(fitparm['dir_output'], exist_ok=True)
+    
+    file_handler = logging.FileHandler(log_filepath, mode='w')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    # Log header
+    logger.info("="*80)
+    logger.info(f"Batch Fit Log: {fitparm['catalog']} - {fitparm['model_category']}")
+    logger.info(f"Source range: {startindex} - {endindex}")
+    logger.info(f"Started: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("="*80)
+    logger.info("")
+    
+    logger.info(f"Initializing {n_workers} worker processes...")
+    start_time = time.time()
+    
+    with Pool(processes=n_workers, initializer=_init_worker, 
+              initargs=(fitparm, extparm)) as pool:
+        
+        logger.info(f"Workers initialized. Starting fits for {len(srclist)} sources...")
+        logger.info("")
+        
+        results = []
+        n_success = 0
+        n_failed = 0
+        
+        # Process sources with imap (lazy evaluation, one at a time)
+        for i, (status, data) in enumerate(pool.imap(_fit_single_source_safe, srclist, chunksize=1)):
+            results.append((status, data))
+            
+            if status == 'success':
+                n_success += 1
+            else:
+                n_failed += 1
+                # Log individual failures immediately
+                logger.warning(f"  FAILED: {data['source_id']} - {data['error_type']}: {data['error_message']}")
+            
+            # Periodic progress updates
+            if (i + 1) % log_interval == 0 or (i + 1) == len(srclist):
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed
+                remaining = len(srclist) - (i + 1)
+                eta = remaining / rate if rate > 0 else 0
+                
+                timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                logger.info(
+                    f"[{timestamp}] Progress: {i+1:>6d}/{len(srclist)} sources | "
+                    f"Success: {n_success:>6d} | Failed: {n_failed:>4d} | "
+                    f"Rate: {rate:>5.1f} src/s | ETA: {eta/60:>5.1f} min"
+                )
+    
+    # Final summary
+    elapsed = time.time() - start_time
+    logger.info("")
+    logger.info("="*80)
+    logger.info("Batch Complete")
+    logger.info("="*80)
+    logger.info(f"Total sources:     {len(srclist):>6d}")
+    logger.info(f"Successful fits:   {n_success:>6d} ({100*n_success/len(srclist):>5.1f}%)")
+    logger.info(f"Failed fits:       {n_failed:>6d} ({100*n_failed/len(srclist):>5.1f}%)")
+    logger.info(f"Total time:        {elapsed/60:>6.1f} minutes")
+    logger.info(f"Average rate:      {len(srclist)/elapsed:>6.1f} sources/second")
+    logger.info(f"Finished:          {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("="*80)
+    
+    # Separate successes and failures
+    fitresultlist = [data for status, data in results if status == 'success']
+    failed_sources = [data for status, data in results if status == 'failure']
+    
+    return fitresultlist, failed_sources
+
+def fit_and_save_batch(path_fitparm, startindex, endindex, 
+                       n_workers=30, log_interval=100):
+    """
+    Complete workflow: load parameters, fit sources in parallel, save results.
+    
+    This is the main orchestration function that handles the complete batch
+    fitting workflow from loading parameters to saving results. It wraps all
+    the individual steps into a single convenient function call.
+    
+    Parameters
+    ----------
+    path_fitparm : str
+        Path to fit parameter file. This file should contain all necessary
+        parameters including:
+        - path_input_hdf5: Path to input catalog HDF5
+        - path_extinction_parm: Path to extinction info file
+        - catalog: Catalog name
+        - model_category: Model category
+        - And other fitting parameters
+    startindex : int
+        Starting source index (inclusive) for this batch.
+    endindex : int
+        Ending source index (inclusive) for this batch.
+    n_workers : int, optional
+        Number of parallel worker processes. Default: 30.
+        Adjust based on available CPU cores and memory.
+    log_interval : int, optional
+        Print progress update every N sources. Default: 100.
+    
+    Returns
+    -------
+    dict
+        Summary dictionary containing:
+        - 'n_sources': Total sources in batch (int)
+        - 'n_success': Number of successful fits (int)
+        - 'n_failed': Number of failed fits (int)
+        - 'hdf5_path': Path to results HDF5 file (str or None if no successes)
+        - 'fail_path': Path to failure log file (str or None if no failures)
+    
+    Examples
+    --------
+    >>> from sesnasedfit import fit
+    >>> 
+    >>> # Fit a batch of 10,000 sources with 30 workers
+    >>> result = fit.fit_and_save_batch(
+    ...     '/path/to/params.txt',
+    ...     startindex=0,
+    ...     endindex=9999,
+    ...     n_workers=30
+    ... )
+    >>> 
+    >>> print(f"Success: {result['n_success']}, Failed: {result['n_failed']}")
+    >>> print(f"Results saved to: {result['hdf5_path']}")
+    
+    >>> # For scripting/terminal use:
+    >>> import sys
+    >>> path_fitparm = sys.argv[1]
+    >>> startindex = int(sys.argv[2])
+    >>> endindex = int(sys.argv[3])
+    >>> result = fit.fit_and_save_batch(path_fitparm, startindex, endindex)
+    
+    Notes
+    -----
+    This function creates the following output files:
+    - {catalog}_SEDFIT-{model_category}_{start:07d}-{end:07d}.hdf5
+    - {catalog}_SEDFIT-{model_category}_{start:07d}-{end:07d}.log
+    - {catalog}_SEDFIT-{model_category}_{start:07d}-{end:07d}.fitfail (if failures)
+    
+    All files are saved to the directory specified by fitparm['dir_output'].
+    """
+    from . import io
+    
+    # Print header
+    print("="*80)
+    print("SESNA SED Fitting - Batch Processing")
+    print("="*80)
+    print(f"Batch range: {startindex} - {endindex}")
+    print(f"Workers: {n_workers}")
+    print("")
+    
+    # Load parameters
+    print(f"Loading parameters from: {path_fitparm}")
+    fitparm = io.read_fit_parm(path_fitparm)
+    
+    print(f"  Catalog: {fitparm['catalog']}")
+    print(f"  Model category: {fitparm['model_category']}")
+    print(f"  Distance range: {fitparm['distance_range_kpc']} kpc")
+    print(f"  Number of best fits to keep: {fitparm['nkeep']}")
+    print(f"  Output directory: {fitparm['dir_output']}")
+    
+    extparm = io.read_extinction_parm(fitparm['path_extinction_parm'])
+    print(f"  Extinction law: {extparm['name']}")
+    print("")
+    
+    # Load source data
+    print(f"Loading sources from: {fitparm['path_input_hdf5']}")
+    print(f"  Source range: {startindex} - {endindex}")
+    srclist = io.read_SESNA_SEDFIT_ascii(fitparm['path_input_hdf5'], startindex, endindex)
+    n_sources = len(srclist)
+    print(f"  Loaded {n_sources} sources")
+    print("")
+    
+    # Fit in parallel (this function handles its own logging)
+    print("Starting parallel fitting...")
+    print("")
+    fitresultlist, failed_sources = fit_batch_parallel(
+        srclist, fitparm, extparm, startindex, endindex,
+        n_workers=n_workers, log_interval=log_interval
+    )
+    
+    # Initialize return values
+    hdf5_path = None
+    fail_path = None
+    
+    # Save successful fits
+    print("")
+    if len(fitresultlist) > 0:
+        print(f"Aggregating {len(fitresultlist)} successful fits...")
+        arrays = aggregate_fitresults_to_arrays(fitresultlist)
+        
+        print(f"Saving results to HDF5...")
+        hdf5_path = io.save_batchfit_results_hdf5(arrays, fitparm, startindex, endindex)
+        print(f"  Results saved: {hdf5_path}")
+    else:
+        print("WARNING: No successful fits to save!")
+    
+    # Save failure log
+    if len(failed_sources) > 0:
+        print(f"Saving failure log for {len(failed_sources)} failed sources...")
+        fail_path = io.save_batch_failures(failed_sources, fitparm, startindex, endindex)
+        print(f"  Failure log saved: {fail_path}")
+    
+    # Final summary
+    print("")
+    print("="*80)
+    print("Batch Processing Complete")
+    print("="*80)
+    print(f"Total sources:     {n_sources:>6d}")
+    print(f"Successful fits:   {len(fitresultlist):>6d} ({100*len(fitresultlist)/n_sources:>5.1f}%)")
+    print(f"Failed fits:       {len(failed_sources):>6d} ({100*len(failed_sources)/n_sources:>5.1f}%)")
+    if hdf5_path:
+        print(f"Results file:      {hdf5_path}")
+    if fail_path:
+        print(f"Failure log:       {fail_path}")
+    print("="*80)
+    
+    # Return summary
+    # return {
+    #     'n_sources': n_sources,
+    #     'n_success': len(fitresultlist),
+    #     'n_failed': len(failed_sources),
+    #     'hdf5_path': hdf5_path,
+    #     'fail_path': fail_path
+    # }
+    return 
+
+def generate_batch_ranges(n_total_sources=None, batch_size=10000, fitparm=None):
+
+    """
+    Generate start/end index pairs for batching a catalog.
+    
+    Creates a list of (startindex, endindex) tuples for processing a catalog
+    in batches. Can either take the total number of sources directly or extract
+    it automatically from a fitparm dictionary.
+    
+    Parameters
+    ----------
+    n_total_sources : int, optional
+        Total number of sources in catalog. If None, must provide fitparm.
+    batch_size : int, optional
+        Number of sources per batch. Default: 10000.
+    fitparm : dict or str, optional
+        Either:
+        - dict: Fit parameters dictionary (from read_fitparm) containing 'path_input_hdf5'
+        - str: Path to fit parameter file
+        If provided, n_total_sources is automatically read from the HDF5 file.
+    
+    Returns
+    -------
+    list of tuple
+        List of (startindex, endindex) tuples. Indices are inclusive.
+    
+    Raises
+    ------
+    ValueError
+        If neither n_total_sources nor fitparm is provided.
+    
+    Examples
+    --------
+    >>> # Option 1: Provide total sources directly
+    >>> ranges = generate_batch_ranges(n_total_sources=25000, batch_size=10000)
+    >>> print(ranges)
+    [(0, 9999), (10000, 19999), (20000, 24999)]
+    
+    >>> # Option 2: Auto-detect from fitparm dict
+    >>> from sesnasedfit import io
+    >>> fitparm = io.read_fitparm('params.txt')
+    >>> ranges = generate_batch_ranges(fitparm=fitparm, batch_size=10000)
+    
+    >>> # Option 3: Auto-detect from fitparm file path
+    >>> ranges = generate_batch_ranges(fitparm='params.txt', batch_size=10000)
+    
+    >>> # Use in a loop
+    >>> for start, end in ranges:
+    ...     print(f"Processing batch {start}-{end}")
+    ...     fit.fit_and_save_batch('params.txt', start, end)
+    
+    Notes
+    -----
+    The endindex is inclusive, so a batch of size 10000 has indices 0-9999,
+    not 0-10000.
+    """
+    from . import io
+    import pandas as pd
+    
+    # Determine n_total_sources
+    if n_total_sources is None:
+        if fitparm is None:
+            raise ValueError("Must provide either n_total_sources or fitparm")
+        
+        # If fitparm is a string, load it
+        if isinstance(fitparm, str):
+            fitparm = io.read_fit_parm(fitparm)
+        
+        # Extract n_total_sources from HDF5 file
+        with pd.HDFStore(fitparm['path_input_hdf5'], 'r') as store:
+            n_total_sources = store.get('NSOURCES')['NSOURCES'][0]
+    
+    # Generate batch ranges
+    ranges = []
+    for start in range(0, n_total_sources, batch_size):
+        end = min(start + batch_size - 1, n_total_sources - 1)
+        ranges.append((start, end))
+    
+    return ranges
+
+def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30, output_script_dir=None):
+    """
+    Generate a shell script to process an entire catalog in batches.
+    
+    Creates a bash script that runs fit_and_save_batch for each batch of sources
+    in a catalog. The script includes variables for the parameter file path and
+    number of workers to keep commands readable. The filename is automatically
+    generated as process_{catalog}_{model_category}.sh.
+    
+    Parameters
+    ----------
+    path_fitparm : str
+        Path to fit parameter file. Used to determine catalog size and create
+        batch ranges. Also stored as a variable in the generated script.
+    batch_size : int, optional
+        Number of sources per batch. Default: 10000.
+    n_workers : int, optional
+        Number of parallel workers per batch. Default: 30.
+    output_script_dir : str, optional
+        Directory where the shell script will be saved. If None, saves to
+        current working directory. Default: None.
+    
+    Returns
+    -------
+    str
+        Full path to the generated shell script file.
+    
+    Examples
+    --------
+    >>> from sesnasedfit import fit
+    >>> 
+    >>> # Generate script in current directory
+    >>> script_path = fit.generate_batch_script('/path/to/params.txt')
+    Generated script: ./process_Serpens_YSO.sh
+      Catalog: Serpens
+      Total batches: 100
+    
+    >>> # Generate script in specific directory
+    >>> script_path = fit.generate_batch_script(
+    ...     '/path/to/params.txt',
+    ...     batch_size=10000,
+    ...     n_workers=30,
+    ...     output_script_dir='/path/to/scripts/'
+    ... )
+    Generated script: /path/to/scripts/process_Serpens_YSO.sh
+    
+    >>> # Run the generated script
+    >>> # ./process_Serpens_YSO.sh
+    
+    >>> # Or run specific lines
+    >>> # head -10 process_Serpens_YSO.sh  # View first few batches
+    >>> # sed -n '6p' process_Serpens_YSO.sh | bash  # Run just batch 1
+    
+    Notes
+    -----
+    The generated script format:
+        #!/bin/bash
+        # Header with catalog info
+        
+        FITPARM="/long/path/to/params.txt"
+        NWORKERS=30
+        
+        python -c "from sesnasedfit.fit import fit_and_save_batch; fit_and_save_batch('$FITPARM', 0, 9999, $NWORKERS)"
+        python -c "from sesnasedfit.fit import fit_and_save_batch; fit_and_save_batch('$FITPARM', 10000, 19999, $NWORKERS)"
+        ...
+    
+    The script is made executable (chmod +x) automatically.
+    
+    Filename format: process_{catalog}_{model_category}.sh
+    
+    To run all batches sequentially: ./process_{catalog}_{model_category}.sh
+    To run specific batches: Edit the script or run individual lines
+    To submit to job scheduler: Modify script or wrap commands in sbatch/qsub
+    """
+    from . import io
+    import os
+    
+    # Load fitparm to get catalog info
+    fitparm = io.read_fit_parm(path_fitparm)
+    
+    # Generate batch ranges
+    ranges = generate_batch_ranges(fitparm=path_fitparm, batch_size=batch_size)
+    
+    # Generate filename
+    script_filename = f"process_{fitparm['catalog']}_{fitparm['model_category']}.sh"
+    
+    # Determine full output path
+    if output_script_dir is None:
+        output_script_path = script_filename
+    else:
+        # Create directory if it doesn't exist
+        os.makedirs(output_script_dir, exist_ok=True)
+        output_script_path = os.path.join(output_script_dir, script_filename)
+    
+    # Write the shell script
+    with open(output_script_path, 'w') as f:
+        # Header
+        f.write("#!/bin/bash\n")
+        f.write(f"# Process {fitparm['catalog']} catalog - {fitparm['model_category']} models\n")
+        f.write(f"# Batch size: {batch_size}, Workers per batch: {n_workers}\n")
+        f.write(f"# Total batches: {len(ranges)}\n\n")
+        
+        # Variables for readability
+        f.write(f"FITPARM=\"{path_fitparm}\"\n")
+        f.write(f"NWORKERS={n_workers}\n\n")
+        
+        # Batch commands
+        for start, end in ranges:
+            f.write(f"python -c \"from sesnasedfit.fit import fit_and_save_batch; "
+                   f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS)\"\n")
+    
+    # Make executable
+    os.chmod(output_script_path, 0o755)
+    
+    # Print summary
+    print(f"Generated script: {output_script_path}")
+    print(f"  Catalog: {fitparm['catalog']}")
+    print(f"  Model category: {fitparm['model_category']}")
+    print(f"  Total batches: {len(ranges)}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Workers per batch: {n_workers}")
+    print(f"\nRun with: ./{script_filename}" if output_script_dir is None 
+          else f"\nRun with: {output_script_path}")
+    
+    return output_script_path
+
+
+
+
+
+
+
+
+
