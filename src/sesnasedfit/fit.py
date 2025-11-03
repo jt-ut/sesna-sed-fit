@@ -1029,7 +1029,7 @@ def generate_batch_ranges(n_total_sources=None, batch_size=10000, fitparm=None):
 
 
 def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30, 
-                         output_script_dir=None, python_executable='python'):
+                         output_script_dir=None, python_executable='python', log_interval=100):
     """
     Generate a shell script to process an entire catalog in batches.
     
@@ -1156,11 +1156,13 @@ def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30,
         f.write(f"PYTHON=\"{python_executable}\"\n")
         f.write(f"FITPARM=\"{path_fitparm}\"\n")
         f.write(f"NWORKERS={n_workers}\n\n")
+        f.write(f"LOGINTERVAL={log_interval}\n\n")
+        
         
         # Batch commands
         for start, end in ranges:
             f.write(f"$PYTHON -c \"from sesnasedfit.fit import fit_and_save_batch; "
-                   f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS)\"\n")
+                   f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS, $LOGINTERVAL)\"\n")
     
     # Make executable
     os.chmod(output_script_path, 0o755)
