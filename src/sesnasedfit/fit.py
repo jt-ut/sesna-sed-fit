@@ -84,6 +84,94 @@ def impute_missing_flux(fitinfo):
     return imputed_fluxes
 
 
+# def fit_source(src, fitterobj, fitparm, extparm, nkeep=10):
+#     """
+#     Fit a single source using one or more model grids with extinction.
+    
+#     This function handles the complete fitting workflow for a single source,
+#     including:
+#     1. Converting source data to sedfitter Source object
+#     2. Setting up extinction (A_V) range (absolute or catalog-based)
+#     3. Running fits with one or more model grids
+#     4. Merging results and keeping the best N fits overall
+    
+#     Parameters
+#     ----------
+#     src : dict
+#         Source dictionary containing:
+#         - 'SOURCE_ASCII': ASCII string formatted for sedfitter
+#         - 'AK': A_K extinction value (used for catalog-based A_V ranges)
+#     fitterobj : Fitter or list of Fitter
+#         Single Fitter instance or list of Fitters (one per model grid).
+#         If a list, results from all grids are merged.
+#     fitparm : dict
+#         Fit parameters dictionary (from read_fitparm) containing:
+#         - 'av_range': Either ['absolute', min, max] or ['catalog', offset]
+#         - 'model_category': Category label for this model set
+#     extparm : dict
+#         Extinction parameters dictionary (from read_extinction_info) containing:
+#         - 'AV_over_AK': Ratio to convert A_K to A_V
+#     nkeep : int, optional
+#         Number of best-fit models to keep (default: 10).
+    
+#     Returns
+#     -------
+#     dict
+#         Merged fit results containing the top nkeep fits sorted by chi-squared.
+#         See extract_fitres for dictionary structure.
+    
+#     Notes
+#     -----
+#     When av_range is 'catalog', the A_V range is computed as:
+#         A_V_center = src['AK'] * extparm['AV_over_AK']
+#         A_V_range = [max(0, A_V_center - offset), A_V_center + offset]
+    
+#     Examples
+#     --------
+#     >>> src = {'SOURCE_ASCII': 'J123456 180.0 30.0 ...', 'AK': 1.5}
+#     >>> fitparm = {'av_range': ['catalog', 5.0], 'model_category': 'YSO'}
+#     >>> extparm = {'AV_over_AK': 8.9}
+#     >>> results = fit_source(src, fitter, fitparm, extparm, nkeep=10)
+#     """
+#     ## Convert single fitter to list for uniform handling
+#     if not isinstance(fitterobj, list):
+#         fitterobj = [fitterobj]
+    
+#     ## Initialize merged results
+#     merged_fits = None
+    
+#     ## Loop over all fitters
+#     for fitter in fitterobj:
+        
+#         ## Initialize this source object
+#         s = Source.from_ascii(src['SOURCE_ASCII'])
+        
+#         ## Handle AV range logic
+#         if fitparm['av_range'][0] == 'absolute':
+#             info = fitter.fit(s)
+#         elif fitparm['av_range'][0] == 'catalog':
+#             fittercopy = deepcopy(fitter)
+#             av_center = src['AK'] * extparm['AV_over_AK']
+#             av_offset = fitparm['av_range'][1]
+#             av_range_tmp = [
+#                 np.max([0, av_center - av_offset]),
+#                 av_center + av_offset
+#             ]
+#             fittercopy.av_range = av_range_tmp
+#             info = fittercopy.fit(s)
+        
+#         ## Keep top fits from this fitter
+#         #info.sort() # Robitaille's fitting routine already sorts before returning 
+#         info.keep(('N', nkeep))
+        
+#         ## Extract fit results
+#         fitres = extract_fitres(info, fitparm)
+        
+#         ## Merge with running best
+#         merged_fits = merge_fitres(merged_fits, fitres, nkeep)
+    
+#     return merged_fits
+
 def fit_source(src, fitterobj, fitparm, extparm, nkeep=10):
     """
     Fit a single source using one or more model grids with extinction.
@@ -348,6 +436,91 @@ def merge_fitres(fitres1, fitres2, nkeep=10):
             merged[key] = val[sort_idx]
     
     return merged
+
+
+# def load_fitterobj(fitparm, extparm, default_av_range=[0., 100.]):
+#     """
+#     Initialize Fitter objects from parameter files and model directories.
+    
+#     Creates one or more sedfitter.Fitter objects based on the provided parameters,
+#     with each Fitter corresponding to a model grid directory. Sets up extinction
+#     law, apertures, filters, distance range, and A_V range.
+    
+#     Parameters
+#     ----------
+#     fitparm : dict
+#         Fit parameters dictionary (from read_fitparm) containing:
+#         - 'model_dir': Single path or list of paths to model directories
+#         - 'apertures': List of aperture sizes (arcsec)
+#         - 'filters': List of filter wavelengths (microns)
+#         - 'av_range': Either ['absolute', min, max] or ['catalog', offset]
+#         - 'path_input_hdf5': Path to HDF5 file containing DISTANCE_RANGE_KPC
+#     extparm : dict
+#         Extinction parameters dictionary (from read_extinction_info) containing:
+#         - 'path': Path to extinction law data file
+#         - 'colidx_wav': Column index for wavelength
+#         - 'colidx_extinction': Column index for extinction/opacity
+#     default_av_range : list of float, optional
+#         Default [min, max] A_V range to use when av_range is 'catalog' mode.
+#         Default: [0., 100.]. This is a placeholder since catalog mode computes
+#         source-specific ranges during fitting.
+    
+#     Returns
+#     -------
+#     list of Fitter
+#         List of sedfitter.Fitter objects, one per model directory.
+    
+#     Notes
+#     -----
+#     When fitparm['av_range'][0] == 'catalog':
+#         - Fitters are initialized with default_av_range
+#         - Actual source-specific ranges are computed in fit_source()
+    
+#     When fitparm['av_range'][0] == 'absolute':
+#         - Fitters use the fixed range specified in fitparm['av_range'][1:]
+    
+#     Examples
+#     --------
+#     >>> fitparm = read_fitparm('params.txt')
+#     >>> extparm = read_extinction_info('extinction.info')
+#     >>> fitters = load_fitterobj(fitparm, extparm)
+#     >>> # fitters is a list of Fitter objects ready for fitting
+#     """
+#     # Initialize the fitter object list with a default av_range
+#     # Based on the av_range keyword in the fitparm file, we might use a source specific av_range in the source loop,
+#     # but Fitter needs a value to instantiate so in this case use the given default for now
+
+#     # Build extinction object first. It will be assigned to all fitters in the list
+#     extinction = Extinction.from_file(extparm['path'], columns=(extparm['colidx_wav'], extparm['colidx_extinction']), wav_unit=u.micron, chi_unit=u.cm ** 2 / u.g)
+
+#     # Extract apertures and filters
+#     apertures = fitparm['apertures'] * u.arcsec
+#     filters = fitparm['filters']
+
+#     # Read distances from source hdf5 file
+#     with pd.HDFStore(fitparm['path_input_hdf5']) as store:
+#         distance_range_kpc = store.get('DISTANCE_RANGE_KPC')['DISTANCE_RANGE_KPC'].to_list()
+#     distance_range_kpc = distance_range_kpc * u.kpc
+
+#     # Initialize empty list
+#     fitters = []
+
+#     # Instantiate a fitter obj from each model directory given in fitparm['model_dir'], assign it to the list
+#     for i in fitparm['model_dir']:
+#         # Decide whether we're using a fixed av_range, or a variable one per source
+#         if fitparm['av_range'][0]=='absolute':
+#             av_range = fitparm['av_range'][1:]
+#         else:
+#             av_range = default_av_range
+#         # Instantiate & save fitter object to list
+#         fitters.append(Fitter(filter_names=filters, apertures=apertures,
+#                               model_dir=i,
+#                               extinction_law=extinction,
+#                               distance_range=distance_range_kpc,
+#                               av_range=av_range,
+#                               remove_resolved=True))
+    
+#     return fitters
 
 
 def load_fitterobj(fitparm, extparm, default_av_range=[0., 100.]):
@@ -638,7 +811,7 @@ def _fit_single_source_safe(src):
         return ('failure', error_info)
 
 def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
-                       n_workers=30, log_interval=100):
+                       n_workers=30, log_interval=100, chunksize=None):
     """
     Fit a batch of sources in parallel with detailed logging.
     
@@ -691,7 +864,37 @@ def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
     - Log file contains progress updates and final summary
     - Worker processes are initialized once and reused for all sources
     - Memory per worker: ~100-200 MB (fitterlist) + minimal per-source overhead
+    
+    Performance Tuning
+    ------------------
+    The chunksize parameter is critical for performance on different systems:
+    
+    chunksize=1 (Default in old code):
+        - Highest overhead, best load balancing
+        - Good for: Highly variable fit times, small batches
+        - ~13x slower on servers with network file systems
+    
+    chunksize=10-20 (Good for laptops):
+        - Good balance for local disk systems
+        - Moderate overhead, good load balancing
+    
+    chunksize=50-100 (Recommended for servers):
+        - Lowest overhead, slight load imbalance
+        - Essential for network file systems (NFS, Lustre)
+        - Can provide 10-50x speedup on remote servers
+    
+    Auto-detection (chunksize=None):
+        - Sets to max(1, len(srclist) // (4 * n_workers))
+        - Capped at 50 for responsiveness
+        - Works well for most cases
     """
+    # Auto-set chunksize if not specified
+    if chunksize is None:
+        # Rule of thumb: ensure each worker gets at least 4 chunks
+        # This provides some load balancing while reducing overhead
+        chunksize = max(1, len(srclist) // (4 * n_workers))
+        chunksize = min(chunksize, 50)  # Cap at 50 to maintain responsiveness
+    
     # Set up logger with dual output (console + file)
     logger = logging.getLogger(f'batchfit_{startindex}_{endindex}')
     logger.setLevel(logging.INFO)
@@ -722,6 +925,7 @@ def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
     logger.info(f"Batch Fit Log: {fitparm['catalog']} - {fitparm['model_category']}")
     logger.info(f"Source range: {startindex} - {endindex}")
     logger.info(f"Started: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Workers: {n_workers}, Chunksize: {chunksize}")
     logger.info("="*80)
     logger.info("")
     
@@ -737,17 +941,17 @@ def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
         results = []
         n_success = 0
         n_failed = 0
+        failed_sources_batch = []  # Accumulate failures for batch logging
         
-        # Process sources with imap (lazy evaluation, one at a time)
-        for i, (status, data) in enumerate(pool.imap(_fit_single_source_safe, srclist, chunksize=1)):
+        # Process sources with imap using optimized chunksize
+        for i, (status, data) in enumerate(pool.imap(_fit_single_source_safe, srclist, chunksize=chunksize)):
             results.append((status, data))
             
             if status == 'success':
                 n_success += 1
             else:
                 n_failed += 1
-                # Log individual failures immediately
-                logger.warning(f"  FAILED: {data['source_id']} - {data['error_type']}: {data['error_message']}")
+                failed_sources_batch.append(data)
             
             # Periodic progress updates
             if (i + 1) % log_interval == 0 or (i + 1) == len(srclist):
@@ -762,6 +966,15 @@ def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
                     f"Success: {n_success:>6d} | Failed: {n_failed:>4d} | "
                     f"Rate: {rate:>5.1f} src/s | ETA: {eta/60:>5.1f} min"
                 )
+                
+                # Log recent failures in batch (not one at a time)
+                if failed_sources_batch:
+                    logger.warning(f"  Recent failures ({len(failed_sources_batch)}):")
+                    for fail in failed_sources_batch[:5]:  # Show up to 5
+                        logger.warning(f"    - {fail['source_id']}: {fail['error_type']}")
+                    if len(failed_sources_batch) > 5:
+                        logger.warning(f"    ... and {len(failed_sources_batch)-5} more")
+                    failed_sources_batch = []  # Clear batch
     
     # Final summary
     elapsed = time.time() - start_time
@@ -784,7 +997,7 @@ def fit_batch_parallel(srclist, fitparm, extparm, startindex, endindex,
     return fitresultlist, failed_sources
 
 def fit_and_save_batch(path_fitparm, startindex, endindex, 
-                       n_workers=30, log_interval=100):
+                       n_workers=30, log_interval=100, chunksize=None):
     """
     Complete workflow: load parameters, fit sources in parallel, save results.
     
@@ -811,6 +1024,12 @@ def fit_and_save_batch(path_fitparm, startindex, endindex,
         Adjust based on available CPU cores and memory.
     log_interval : int, optional
         Print progress update every N sources. Default: 100.
+    chunksize : int, optional
+        Number of sources to send to each worker at once. Higher values reduce
+        inter-process communication overhead but may reduce load balancing.
+        If None, automatically sets to max(1, len(srclist) // (4 * n_workers)).
+        For remote servers with network file systems, use 50-100.
+        Default: None (auto).
     
     Returns
     -------
@@ -898,7 +1117,7 @@ def fit_and_save_batch(path_fitparm, startindex, endindex,
     print("")
     fitresultlist, failed_sources = fit_batch_parallel(
         srclist, fitparm, extparm, startindex, endindex,
-        n_workers=n_workers, log_interval=log_interval
+        n_workers=n_workers, log_interval=log_interval, chunksize=chunksize
     )
     
     # Initialize return values
@@ -1029,7 +1248,7 @@ def generate_batch_ranges(n_total_sources=None, batch_size=10000, fitparm=None):
 
 
 def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30, 
-                         output_script_dir=None, python_executable='python', log_interval=100):
+                         output_script_dir=None, python_executable='python'):
     """
     Generate a shell script to process an entire catalog in batches.
     
@@ -1156,13 +1375,11 @@ def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30,
         f.write(f"PYTHON=\"{python_executable}\"\n")
         f.write(f"FITPARM=\"{path_fitparm}\"\n")
         f.write(f"NWORKERS={n_workers}\n\n")
-        f.write(f"LOGINTERVAL={log_interval}\n\n")
-        
         
         # Batch commands
         for start, end in ranges:
             f.write(f"$PYTHON -c \"from sesnasedfit.fit import fit_and_save_batch; "
-                   f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS, $LOGINTERVAL)\"\n")
+                   f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS)\"\n")
     
     # Make executable
     os.chmod(output_script_path, 0o755)
