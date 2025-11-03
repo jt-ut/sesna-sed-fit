@@ -1248,6 +1248,7 @@ def generate_batch_ranges(n_total_sources=None, batch_size=10000, fitparm=None):
 
 
 def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30, 
+                         log_interval=100, chunksize=None,
                          output_script_dir=None, python_executable='python'):
     """
     Generate a shell script to process an entire catalog in batches.
@@ -1266,6 +1267,11 @@ def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30,
         Number of sources per batch. Default: 10000.
     n_workers : int, optional
         Number of parallel workers per batch. Default: 30.
+    log_interval : int, optional
+        Print progress update every N sources. Default: 100.
+    chunksize : int, optional
+        Number of sources per worker chunk. If None, auto-detects optimal value.
+        For servers, use 50-100 for best performance. Default: None (auto).
     output_script_dir : str, optional
         Directory where the shell script will be saved. If None, saves to
         current working directory. Default: None.
@@ -1325,9 +1331,11 @@ def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30,
         PYTHON="python3.9"
         FITPARM="/long/path/to/params.txt"
         NWORKERS=30
+        LOGINTERVAL=100
+        CHUNKSIZE=50
         
-        $PYTHON -c "from sesnasedfit.fit import fit_and_save_batch; fit_and_save_batch('$FITPARM', 0, 9999, $NWORKERS)"
-        $PYTHON -c "from sesnasedfit.fit import fit_and_save_batch; fit_and_save_batch('$FITPARM', 10000, 19999, $NWORKERS)"
+        $PYTHON -c "from sesnasedfit.fit import fit_and_save_batch; fit_and_save_batch('$FITPARM', 0, 9999, $NWORKERS, $LOGINTERVAL, $CHUNKSIZE)"
+        $PYTHON -c "from sesnasedfit.fit import fit_and_save_batch; fit_and_save_batch('$FITPARM', 10000, 19999, $NWORKERS, $LOGINTERVAL, $CHUNKSIZE)"
         ...
     
     The script is made executable (chmod +x) automatically.
@@ -1374,12 +1382,21 @@ def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30,
         # Variables for readability
         f.write(f"PYTHON=\"{python_executable}\"\n")
         f.write(f"FITPARM=\"{path_fitparm}\"\n")
-        f.write(f"NWORKERS={n_workers}\n\n")
+        f.write(f"NWORKERS={n_workers}\n")
+        f.write(f"LOGINTERVAL={log_interval}\n")
+        if chunksize is not None:
+            f.write(f"CHUNKSIZE={chunksize}\n\n")
+        else:
+            f.write("CHUNKSIZE=\"None\"  # Auto-detect\n\n")
         
         # Batch commands
         for start, end in ranges:
-            f.write(f"$PYTHON -c \"from sesnasedfit.fit import fit_and_save_batch; "
-                   f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS)\"\n")
+            if chunksize is not None:
+                f.write(f"$PYTHON -c \"from sesnasedfit.fit import fit_and_save_batch; "
+                       f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS, $LOGINTERVAL, $CHUNKSIZE)\"\n")
+            else:
+                f.write(f"$PYTHON -c \"from sesnasedfit.fit import fit_and_save_batch; "
+                       f"fit_and_save_batch('$FITPARM', {start}, {end}, $NWORKERS, $LOGINTERVAL)\"\n")
     
     # Make executable
     os.chmod(output_script_path, 0o755)
@@ -1391,6 +1408,8 @@ def generate_batch_script(path_fitparm, batch_size=10000, n_workers=30,
     print(f"  Total batches: {len(ranges)}")
     print(f"  Batch size: {batch_size}")
     print(f"  Workers per batch: {n_workers}")
+    print(f"  Log interval: {log_interval}")
+    print(f"  Chunksize: {chunksize if chunksize is not None else 'auto'}")
     print(f"  Python executable: {python_executable}")
     print(f"\nRun with: ./{script_filename}" if output_script_dir is None 
           else f"\nRun with: {output_script_path}")
