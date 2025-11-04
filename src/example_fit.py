@@ -4,7 +4,7 @@ from sesnasedfit import io, fit
 ## Inputs 
 path_fitparm = "/Users/jtaylor/Dropbox/Research/SESNA_SEDFit_v2/fit_parm/yso/fit_yso_AFGL 490.parm"
 source_startindex = 0 
-source_endindex = 9
+source_endindex = 100
 
 ## Read parameter files
 fitparm = io.read_fit_parm(path_fitparm) 
