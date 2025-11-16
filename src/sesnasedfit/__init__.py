@@ -4,6 +4,8 @@ sesnasedfit: SESNA SED Fitting Tools
 
 from . import io
 from . import fit 
+from . import gutermuth_scoring
+from . import gaia_detect
 
 
 __version__ = "0.1.0"

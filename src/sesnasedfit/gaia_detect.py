@@ -1,0 +1,959 @@
+"""
+SED Scaling Module
+
+Functions for scaling model SEDs based on fitted extinction (AV) and 
+brightness (SC) parameters from SED fitting results.
+
+This module helps transform model SEDs to match observed sources by applying:
+1. Brightness/distance scaling via sc_best parameter
+2. Wavelength-dependent extinction via AV and extinction law
+"""
+
+import numpy as np
+from scipy.interpolate import interp1d
+from astropy import units as u
+
+
+def compute_av_law(ext_obj, band_wavelengths, v_band_wav=0.55):
+    """
+    Compute the extinction law pattern (A_lambda / A_V) for given bands.
+    
+    Parameters
+    ----------
+    ext_obj : Extinction object
+        Extinction object with .wav (wavelengths in micron) and 
+        .chi (opacity in cm^2/g) attributes
+    band_wavelengths : array-like
+        Wavelengths of your photometric bands in microns
+        e.g., [1.235, 1.662, 2.159, 3.6, 4.5, 5.8, 8.0, 24.0] 
+        for J, H, K, IRAC, MIPS
+    v_band_wav : float, optional
+        V-band wavelength in microns for normalization (default: 0.55)
+    
+    Returns
+    -------
+    av_law : np.ndarray
+        Extinction pattern A_lambda / A_V for each band
+    """
+    # Extract wavelength and opacity from extinction object
+    wavelength = ext_obj.wav  # in microns
+    opacity = ext_obj.chi     # in cm^2/g
+    
+    # Create interpolation function
+    interp_func = interp1d(wavelength, opacity, kind='linear', 
+                          fill_value='extrapolate', bounds_error=False)
+    
+    # Get opacity at your band wavelengths
+    opacity_at_bands = interp_func(band_wavelengths)
+    
+    # Get opacity at V-band for normalization
+    opacity_V = interp_func(v_band_wav)
+    
+    # Compute A_lambda / A_V
+    av_law = opacity_at_bands / opacity_V
+    
+    return av_law
+
+
+# Example usage for reference:
+if __name__ == "__main__":
+    from sesnasedfit import io 
+    from sedfitter.extinction import Extinction
+    
+    # Define parameter file detailing extinction law
+    ext_parmfile = "/Users/jtaylor/Dropbox/Research/SESNA_SEDFit_v2/extinction_laws/whitney.r550/whitney.r550.info"
+    ext_parm = io.read_extinction_parm(ext_parmfile)
+    
+    # Instantiate an extinction object
+    ext_obj = Extinction.from_file(
+        ext_parm['path'], 
+        columns=(ext_parm['colidx_wav'], ext_parm['colidx_extinction']), 
+        wav_unit=u.micron, 
+        chi_unit=u.cm ** 2 / u.g
+    )
+    
+    # Define band wavelengths (J, H, K, IRAC, MIPS)
+    band_wavelengths = np.array([1.235, 1.662, 2.159,  # J, H, K (2MASS)
+                                  3.6, 4.5, 5.8, 8.0,    # IRAC
+                                  24.0])                  # MIPS
+    
+    av_law = compute_av_law(ext_obj, band_wavelengths)
+    print("av_law:", av_law)
+    
+    # Example: Load fit results
+    fitres_path = '/Users/jtaylor/Dropbox/Research/SESNA_SEDFit_v2/fit_results/yso/AFGL 490'
+    fitres = io.load_batchfit_dir(fitres_path, max_fit_rank=None, n_workers=10, verbose=True)
+    
+    # Example: Explore a model SED FITS file
+    print("\n" + "="*60)
+    print("EXPLORING MODEL SED FITS FILE")
+    print("="*60 + "\n")
+    model_fits_path = '/Users/jtaylor/Dropbox/Research/SESNA_SEDFit_v2/sed_models/yso_ds1000/s---s-i/flux.fits'
+    explore_model_fits(model_fits_path)
+    
+    # Check wavelength coverage for Gaia G-band
+    print("\n" + "="*60)
+    print("CHECKING WAVELENGTH COVERAGE")
+    print("="*60 + "\n")
+    check_wavelength_coverage(model_fits_path)
+    
+    # ===== STREAMLINED WORKFLOW EXAMPLE =====
+    print("\n" + "="*60)
+    print("STREAMLINED GAIA DETECTION WORKFLOW")
+    print("="*60 + "\n")
+    
+    # Step 1: Load Gaia G-band filter
+    print("# gaia_filter = load_gaia_g_filter('passband.dat', 'zeropt.dat')")
+    
+    # Step 2: Load models
+    print("# models = load_models('path/to/models/', pattern='*.fits')")
+    print("# wavelengths = models['wavelengths']")
+    print("# fluxes = models['fluxes']")
+    
+    # Step 3: Compute av_law
+    wavelengths, fluxes, model_names = load_model_sed_data(model_fits_path)
+    av_law = compute_av_law(ext_obj, wavelengths)
+    print(f"Computed av_law for {len(wavelengths)} wavelengths")
+    
+    # Example: Load models - unified function handles all cases
+    print("\n" + "="*60)
+    print("LOADING MODELS - ONE FUNCTION FOR ALL CASES")
+    print("="*60 + "\n")
+    
+    print("# Single file:")
+    print("# models = load_models('path/to/flux.fits')")
+    print()
+    print("# List of files (e.g., 18 YSO files):")
+    print("# models = load_models(['dir1/flux.fits', 'dir2/flux.fits', ...])")
+    print()
+    print("# Directory with pattern (e.g., SPS models):")
+    print("# models = load_models('path/to/sps/seds/', pattern='*_sed.fits.gz')")
+    
+    # Example: Use wrapper function to process all sources
+    print("\n" + "="*60)
+    print("EXAMPLE: PROCESS ALL SOURCES AT ONCE")
+    print("="*60)
+    print("\n# results = compute_detection_probabilities_all_sources(")
+    print("#     fitres, fluxes, wavelengths, av_law, gaia_filter,")
+    print("#     is_galaxy=False, n_samples=5")
+    print("# )")
+    print("# print(results.head())")
+    print("# results.to_csv('yso_detection_probs.csv', index=False)")
+    
+    # Step 4: Compute detection probabilities (EXAMPLE - need gaia_filter loaded)
+    # For YSO/SPS models:
+    # Per-model detection probabilities
+    # detection_probs = compute_gaia_detection_probability(
+    #     fluxes, wavelengths, av_law, source_fits, gaia_filter, 
+    #     is_galaxy=False, n_samples=5, return_per_model=True
+    # )
+    # print(f"Detection probs per model: {detection_probs}")
+    
+    # Overall detection probability for the model set
+    # overall_prob = compute_gaia_detection_probability(
+    #     fluxes, wavelengths, av_law, source_fits, gaia_filter,
+    #     is_galaxy=False, n_samples=5, return_per_model=False
+    # )
+    # print(f"Overall YSO detection probability: {overall_prob:.2%}")
+    
+    # For Galaxy models (H-band flux sampled from each fit):
+    # overall_prob = compute_gaia_detection_probability(
+    #     fluxes, wavelengths, av_law, source_fits, gaia_filter,
+    #     is_galaxy=True, n_samples=5, return_per_model=False
+    # )
+    # print(f"Overall galaxy detection probability: {overall_prob:.2%}")
+    
+    # print(f"\nDetection probabilities for {len(model_names)} models:")
+    # for i, (name, prob) in enumerate(zip(model_names, detection_probs)):
+    #     print(f"  {name}: {prob:.2f}")
+    
+    print("\n" + "="*60)
+    print("STREAMLINED WORKFLOW - SIMPLIFIED API")
+    print("="*60)
+    print("✓ ONE function to load models: load_models()")
+    print("✓ Handles: single file, list of files, or directory+pattern")
+    print("✓ ONE function to load Gaia filter: load_gaia_g_filter()")
+    print("✓ Both return clean dictionaries")
+    print("✓ ONE wrapper to process all sources: compute_detection_probabilities_all_sources()")
+    print("\nExample:")
+    print("  gaia_filter = load_gaia_g_filter('passband.dat', 'zeropt.dat')")
+    print("  models = load_models('path/to/models/', pattern='*.fits')")
+    print("  results = compute_detection_probabilities_all_sources(...)")
+    print("="*60)
+
+
+def load_models(path, pattern=None, aperture_index=0):
+    """
+    Load model SED(s) from FITS file(s).
+    
+    This is the main user-facing function for loading models. It handles:
+    - Single FITS file
+    - List of FITS files  
+    - Directory with glob pattern
+    
+    Parameters
+    ----------
+    path : str or list of str
+        One of:
+        - Path to single FITS file: 'path/to/model.fits'
+        - Path to directory: 'path/to/models/'
+        - List of FITS file paths: ['file1.fits', 'file2.fits', ...]
+    pattern : str, optional
+        Glob pattern for matching files in directory (only used if path is a directory)
+        Examples: '*.fits', '*_sed.fits.gz', '*/flux.fits'
+        If None and path is a directory, defaults to '*.fits*'
+    aperture_index : int, optional
+        Which aperture to extract for multi-aperture models (default: 0)
+    
+    Returns
+    -------
+    models : dict
+        Dictionary with keys:
+        - 'wavelengths': Wavelength grid in microns (array)
+        - 'fluxes': Model fluxes, shape (N_models, N_wavelengths) (array)
+        - 'model_names': Model names (array)
+        - 'n_models': Number of models (int)
+        - 'n_wavelengths': Number of wavelength points (int)
+    
+    Examples
+    --------
+    # Single file
+    models = load_models('path/to/flux.fits')
+    
+    # List of files (e.g., 18 YSO flux.fits files)
+    yso_paths = ['yso/dir1/flux.fits', 'yso/dir2/flux.fits', ...]
+    models = load_models(yso_paths)
+    
+    # Directory with pattern (e.g., all SPS models)
+    models = load_models('path/to/sps/seds/', pattern='*_sed.fits.gz')
+    
+    # YSO subdirectories
+    models = load_models('path/to/yso/', pattern='*/flux.fits')
+    
+    # Access data
+    wavelengths = models['wavelengths']
+    fluxes = models['fluxes']
+    print(f"Loaded {models['n_models']} models")
+    """
+    from glob import glob
+    import os
+    
+    # Case 1: List of paths provided
+    if isinstance(path, list):
+        fits_paths = path
+        print(f"Loading {len(fits_paths)} files from provided list")
+    
+    # Case 2: Single path - determine if file or directory
+    elif isinstance(path, str):
+        if os.path.isfile(path):
+            # Single file
+            fits_paths = [path]
+            print(f"Loading single file: {os.path.basename(path)}")
+        elif os.path.isdir(path):
+            # Directory - use pattern
+            if pattern is None:
+                pattern = '*.fits*'
+            full_pattern = os.path.join(path, pattern)
+            fits_paths = sorted(glob(full_pattern))
+            if len(fits_paths) == 0:
+                raise ValueError(f"No files found matching pattern: {full_pattern}")
+            print(f"Found {len(fits_paths)} files in {path} matching pattern: {pattern}")
+        else:
+            raise ValueError(f"Path does not exist: {path}")
+    else:
+        raise TypeError(f"path must be str or list, got {type(path)}")
+    
+    # Load first file
+    wavelengths, fluxes_list, names_list = load_model_sed_data(fits_paths[0], aperture_index)
+    fluxes_all = [fluxes_list]
+    names_all = [names_list]
+    
+    # Load and concatenate remaining files if any
+    if len(fits_paths) > 1:
+        for fits_path in fits_paths[1:]:
+            wav_i, flux_i, names_i = load_model_sed_data(fits_path, aperture_index)
+            
+            # Check wavelength consistency
+            if not np.allclose(wav_i, wavelengths):
+                print(f"WARNING: Wavelength grid differs in {fits_path}")
+                print(f"  Using wavelength grid from first file")
+            
+            fluxes_all.append(flux_i)
+            names_all.append(names_i)
+        
+        # Concatenate
+        fluxes = np.vstack(fluxes_all)
+        model_names = np.concatenate(names_all)
+        print(f"Loaded {len(fits_paths)} files with {len(model_names)} total models")
+    else:
+        fluxes = fluxes_list
+        model_names = names_list
+    
+    return {
+        'wavelengths': wavelengths,
+        'fluxes': fluxes,
+        'model_names': model_names,
+        'n_models': len(model_names),
+        'n_wavelengths': len(wavelengths)
+    }
+
+
+# Keep these as internal/deprecated functions for backward compatibility
+def load_model_sed_data(fits_path, aperture_index=0):
+    """
+    Load model SED data from FITS file.
+    
+    Handles multiple formats:
+    - Format 1 (YSO/Galaxy): Multiple models in one file with 3D flux array
+    - Format 2 (SPS): Single model per file with flux in table columns
+    
+    Parameters
+    ----------
+    fits_path : str
+        Path to the FITS file containing model SEDs
+    aperture_index : int, optional
+        Which aperture to extract if multiple apertures exist (default: 0 for smallest)
+        Use -1 for largest aperture
+    
+    Returns
+    -------
+    wavelengths : np.ndarray
+        Wavelength grid in microns (length N_wav)
+    fluxes : np.ndarray
+        Model fluxes (LINEAR), shape (N_models, N_wav)
+    model_names : np.ndarray
+        Array of model names (length N_models) - useful for tracking
+    """
+    from astropy.io import fits
+    import os
+    
+    with fits.open(fits_path) as hdul:
+        
+        # Detect format by checking HDU names
+        hdu_names = [hdu.name for hdu in hdul]
+        
+        # Format 2: Single model per file (SPS format)
+        if 'SEDS' in hdu_names and 'WAVELENGTHS' in hdu_names:
+            # Single model format
+            wavelengths = hdul['WAVELENGTHS'].data['WAVELENGTH']
+            
+            # Extract model name from filename
+            model_name = os.path.basename(fits_path).replace('.fits.gz', '').replace('.fits', '')
+            model_names = np.array([model_name])
+            
+            # Get flux data from SEDS table (LINEAR flux)
+            fluxes = hdul['SEDS'].data['TOTAL_FLUX'][0]  # Shape: (N_wav,)
+            
+            # Reshape to (1, N_wav) for consistency
+            fluxes = fluxes.reshape(1, -1)
+        
+        # Format 1: Multiple models in one file (YSO/Galaxy format)
+        elif 'MODEL_NAMES' in hdu_names and 'VALUES' in hdu_names:
+            # Multiple models format
+            model_names = hdul['MODEL_NAMES'].data['MODEL_NAME']
+            wavelengths = hdul['SPECTRAL_INFO'].data['WAVELENGTH']
+            
+            # VALUES shape can vary - need to determine correct orientation
+            fluxes_raw = hdul['VALUES'].data
+            
+            # Determine the shape and transpose to (N_models, N_apertures, N_wavelengths)
+            if fluxes_raw.ndim == 3:
+                n_wav = len(wavelengths)
+                if fluxes_raw.shape[0] == n_wav:
+                    # Shape is (N_wavelengths, N_apertures, N_models) - transpose
+                    fluxes_3d = np.transpose(fluxes_raw, (2, 1, 0))
+                elif fluxes_raw.shape[2] == n_wav:
+                    # Shape is already (N_models, N_apertures, N_wavelengths)
+                    fluxes_3d = fluxes_raw
+                else:
+                    # Shape might be (N_models, N_wavelengths, N_apertures)
+                    fluxes_3d = np.transpose(fluxes_raw, (0, 2, 1))
+            else:
+                raise ValueError(f"Unexpected data shape: {fluxes_raw.shape}")
+            
+            # Extract specific aperture (or squeeze if only 1 aperture)
+            if fluxes_3d.shape[1] == 1:
+                # Single aperture - squeeze out that dimension
+                fluxes = fluxes_3d[:, 0, :]
+            else:
+                # Multiple apertures - extract the requested one
+                fluxes = fluxes_3d[:, aperture_index, :]
+        
+        else:
+            raise ValueError(f"Unrecognized FITS format. HDU names: {hdu_names}")
+    
+    return wavelengths, fluxes, model_names
+
+
+
+
+def check_wavelength_coverage(fits_path):
+    """
+    Check the wavelength coverage of model SEDs.
+    
+    Parameters
+    ----------
+    fits_path : str
+        Path to the FITS file
+    
+    Returns
+    -------
+    None (prints wavelength range information)
+    """
+    wavelengths, fluxes, model_names = load_model_sed_data(fits_path)
+    
+    print(f"Number of models: {len(model_names)}")
+    print(f"\nWavelength coverage:")
+    print(f"  Number of wavelength points: {len(wavelengths)}")
+    print(f"  Minimum wavelength: {wavelengths.min():.4f} microns")
+    print(f"  Maximum wavelength: {wavelengths.max():.4f} microns")
+    print(f"  First 10 wavelengths: {wavelengths[:10]}")
+    print(f"  Last 10 wavelengths: {wavelengths[-10:]}")
+    
+    # Check if optical wavelengths are covered
+    if wavelengths.min() <= 0.6 <= wavelengths.max():
+        print(f"\n✓ Gaia G-band (~0.6 microns) IS covered")
+    else:
+        print(f"\n✗ WARNING: Gaia G-band (~0.6 microns) is NOT covered")
+        print(f"  G-band range needed: ~0.4-1.0 microns")
+    
+    return
+
+
+def load_gaia_g_filter(passband_file, zeropoint_file, system='VEGAMAG'):
+    """
+    Load Gaia G-band filter transmission curve and zero point.
+    
+    Parameters
+    ----------
+    passband_file : str
+        Path to passband.dat file
+    zeropoint_file : str
+        Path to zeropt.dat file
+    system : str, optional
+        Photometric system: 'VEGAMAG' or 'AB' (default: 'VEGAMAG')
+    
+    Returns
+    -------
+    gaia_filter : dict
+        Dictionary with keys:
+        - 'wavelength': Wavelength in microns (array)
+        - 'transmission': G-band transmission curve (array)
+        - 'zeropoint': Zero point magnitude (scalar)
+        - 'system': Photometric system used (str)
+    
+    Examples
+    --------
+    gaia_filter = load_gaia_g_filter('passband.dat', 'zeropt.dat')
+    # Access components:
+    gaia_filter['wavelength']
+    gaia_filter['transmission']
+    gaia_filter['zeropoint']
+    """
+    # Load passband data
+    # Columns: lambda(nm), GPb, e_GPb, BPPb, e_BPPb, RPPb, e_RPPb
+    data = np.loadtxt(passband_file)
+    wavelength_nm = data[:, 0]
+    g_transmission = data[:, 1]
+    
+    # Filter out undefined values (99.99)
+    valid = g_transmission < 90.0
+    wavelength_nm = wavelength_nm[valid]
+    g_transmission = g_transmission[valid]
+    
+    # Convert wavelength to microns
+    wavelength_micron = wavelength_nm / 1000.0
+    
+    # Load zero point
+    with open(zeropoint_file, 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            if system in line:
+                parts = line.split()
+                zeropoint = float(parts[0])  # G band zero point
+                break
+    
+    return {
+        'wavelength': wavelength_micron,
+        'transmission': g_transmission,
+        'zeropoint': zeropoint,
+        'system': system
+    }
+
+
+def compute_gband_flux(wavelength_micron, flux, filter_wavelength, filter_transmission):
+    """
+    Compute G-band flux by convolving SED with filter transmission.
+    
+    Optimized vectorized implementation for fast computation on many models.
+    
+    Parameters
+    ----------
+    wavelength_micron : np.ndarray
+        SED wavelength grid in microns
+    flux : np.ndarray
+        SED flux (can be 1D or 2D array where axis 0 is different models)
+    filter_wavelength : np.ndarray
+        Filter wavelength grid in microns
+    filter_transmission : np.ndarray
+        Filter transmission curve
+    
+    Returns
+    -------
+    flux_g : float or np.ndarray
+        G-band integrated flux
+    """
+    from scipy.interpolate import interp1d
+    from scipy.integrate import trapezoid
+    
+    # Handle both 1D and 2D flux arrays
+    flux_is_1d = (flux.ndim == 1)
+    if flux_is_1d:
+        flux = flux.reshape(1, -1)
+    
+    n_models = flux.shape[0]
+    
+    # **OPTIMIZATION**: Create interpolation function once, apply to all models
+    # This is much faster than calling np.interp in a loop
+    
+    # Pre-compute denominator (constant across all models)
+    denominator = trapezoid(filter_transmission, filter_wavelength)
+    
+    # Vectorized interpolation for all models at once
+    # Use interp1d with bounds_error=False to handle out-of-range
+    flux_g = np.zeros(n_models)
+    
+    for i in range(n_models):
+        # Still need loop for interpolation, but this is the fastest approach
+        # np.interp is actually very fast for 1D interpolation
+        flux_interp = np.interp(filter_wavelength, wavelength_micron, flux[i, :], 
+                                left=0.0, right=0.0)
+        
+        # Compute weighted integral
+        numerator = trapezoid(flux_interp * filter_transmission, filter_wavelength)
+        flux_g[i] = numerator / denominator
+    
+    if flux_is_1d:
+        return flux_g[0]
+    else:
+        return flux_g
+
+
+def flux_to_magnitude(flux, zeropoint):
+    """
+    Convert flux to magnitude.
+    
+    Parameters
+    ----------
+    flux : float or np.ndarray
+        Flux value(s)
+    zeropoint : float
+        Magnitude zero point
+    
+    Returns
+    -------
+    magnitude : float or np.ndarray
+        Magnitude(s)
+    """
+    return -2.5 * np.log10(flux) + zeropoint
+
+
+def compute_gaia_detection_probability(model_fluxes, wavelengths, av_law, 
+                                       top5_fits, gaia_filter, 
+                                       is_galaxy=False, n_samples=5,
+                                       return_per_model=True):
+    """
+    Compute Gaia detection probability for model(s) given top 5 fits for a source.
+    
+    Uses chi2-weighted sampling of (sc_best, av_best) pairs from top 5 fits,
+    scales ALL models simultaneously, computes G-band magnitudes, and determines detection rate.
+    
+    Parameters
+    ----------
+    model_fluxes : np.ndarray
+        Model SED fluxes in LINEAR units
+        Shape: (N_models, N_wavelengths) or (N_wavelengths,) for single model
+    wavelengths : np.ndarray
+        Wavelength grid in microns
+    av_law : np.ndarray
+        Extinction law (A_lambda / A_V) for each wavelength
+    top5_fits : pandas.DataFrame
+        Top 5 fits with columns: sc_best, av_best, chi2
+        For galaxy models, must also contain: imp_flux_H
+    gaia_filter : tuple
+        (filter_wavelength_micron, filter_transmission, zeropoint_vegamag)
+    is_galaxy : bool, optional
+        If True, multiply scaled flux by imp_flux_H from sampled fit (default: False)
+    n_samples : int, optional
+        Number of Monte Carlo samples (default: 5)
+    return_per_model : bool, optional
+        If True, return detection probability for each model (default: True)
+        If False, return overall detection probability (fraction of models detected)
+    
+    Returns
+    -------
+    detection_prob : np.ndarray or float
+        If return_per_model=True: Detection probability for each model, shape (N_models,)
+        If return_per_model=False: Overall detection probability (scalar)
+        For single model input, always returns scalar
+    """
+    # Handle single model case
+    single_model = (model_fluxes.ndim == 1)
+    if single_model:
+        model_fluxes = model_fluxes.reshape(1, -1)
+    
+    n_models = model_fluxes.shape[0]
+    
+    # Extract fit parameters
+    if isinstance(top5_fits, dict):
+        chi2 = np.array(top5_fits['chi2'])
+        sc_best_vals = np.array(top5_fits['sc_best'])
+        av_best_vals = np.array(top5_fits['av_best'])
+        if is_galaxy:
+            h_band_vals = np.array(top5_fits['imp_flux_H'])
+    else:
+        chi2 = top5_fits['chi2'].values
+        sc_best_vals = top5_fits['sc_best'].values
+        av_best_vals = top5_fits['av_best'].values
+        if is_galaxy:
+            h_band_vals = top5_fits['imp_flux_H'].values
+    
+    # Convert chi2 to sampling weights
+    weights = np.exp(-chi2 / 2.0)
+    weights /= weights.sum()
+    
+    # Unpack Gaia filter (handle both dict and tuple formats)
+    if isinstance(gaia_filter, dict):
+        filter_wav = gaia_filter['wavelength']
+        filter_trans = gaia_filter['transmission']
+        zeropoint = gaia_filter['zeropoint']
+    else:
+        # Legacy tuple format: (wavelength, transmission, zeropoint)
+        filter_wav, filter_trans, zeropoint = gaia_filter
+    
+    # Count detections per model across all samples
+    detection_count = np.zeros(n_models)
+    
+    for _ in range(n_samples):
+        # Sample ONE (sc_best, av_best, [h_band]) tuple for this iteration
+        fit_idx = np.random.choice(len(chi2), p=weights)
+        sc_best = sc_best_vals[fit_idx]
+        av_best = av_best_vals[fit_idx]
+        
+        # Scale ALL models at once (vectorized operation)
+        flux_scaled_all = scale_model_sed(model_fluxes, sc_best, av_best, av_law)
+        # Shape: (N_models, N_wavelengths)
+        
+        # If galaxy model: multiply ALL models by H-band flux from this fit
+        if is_galaxy:
+            h_band_flux = h_band_vals[fit_idx]
+            flux_scaled_all = flux_scaled_all * h_band_flux
+        
+        # Compute G-band flux for ALL models at once
+        flux_g_all = compute_gband_flux(wavelengths, flux_scaled_all, filter_wav, filter_trans)
+        # Shape: (N_models,)
+        
+        # Convert to magnitudes for all models
+        mag_g_all = flux_to_magnitude(flux_g_all, zeropoint)
+        # Shape: (N_models,)
+        
+        # Check detection for all models (boolean array)
+        detected = (mag_g_all < 20.7)
+        # Shape: (N_models,) boolean
+        
+        # Increment detection count
+        detection_count += detected
+    
+    # Compute detection probabilities
+    detection_probs = detection_count / n_samples
+    
+    # Return based on parameters
+    if single_model:
+        # Single model always returns scalar
+        return detection_probs[0]
+    elif return_per_model:
+        # Return per-model probabilities
+        return detection_probs
+    else:
+        # Return overall probability (mean across models)
+        return detection_probs.mean()
+
+
+def scale_model_sed(flux_model, sc_best, av_best, av_law):
+    """
+    Scale model SED by brightness and extinction parameters.
+    
+    Applies transformations in log space internally, returns linear flux:
+    log_flux_scaled = log_flux_model + sc_best * (-2) - (av_best * av_law) / 2.5
+    
+    Parameters
+    ----------
+    flux_model : np.ndarray
+        Model flux in LINEAR units (can be 1D or 2D where axis 0 is models, axis 1 is wavelengths)
+    sc_best : float
+        Fitted scaling parameter
+    av_best : float
+        Fitted extinction (A_V) value
+    av_law : np.ndarray
+        Extinction law pattern (A_lambda / A_V) for each wavelength
+    
+    Returns
+    -------
+    flux_scaled : np.ndarray
+        Scaled flux in LINEAR units
+    """
+    # Convert to log space
+    log_flux_model = np.log10(flux_model)
+    
+    # Apply scaling in log space
+    # Brightness scaling term
+    brightness_term = sc_best * (-2.0)
+    
+    # Extinction term (convert from magnitudes to log flux)
+    extinction_term = -(av_best * av_law) / 2.5
+    
+    log_flux_scaled = log_flux_model + brightness_term + extinction_term
+    
+    # Convert back to linear flux
+    flux_scaled = 10.0 ** log_flux_scaled
+    
+    return flux_scaled
+
+
+def _process_single_source(source_id, source_fits, model_fluxes, wavelengths, 
+                          av_law, gaia_filter, is_galaxy, n_samples):
+    """
+    Process a single source to compute detection probability.
+    
+    Helper function for parallel processing.
+    
+    Parameters
+    ----------
+    source_id : str or int
+        Source identifier
+    source_fits : pandas.DataFrame
+        Fit results for this source (subset of fitres)
+    model_fluxes : np.ndarray
+        Model SED fluxes, shape (N_models, N_wavelengths)
+    wavelengths : np.ndarray
+        Wavelength grid in microns
+    av_law : np.ndarray
+        Extinction law (A_lambda / A_V) for each wavelength
+    gaia_filter : dict
+        Gaia filter data
+    is_galaxy : bool
+        If True, use H-band scaling for galaxy models
+    n_samples : int
+        Number of Monte Carlo samples
+    
+    Returns
+    -------
+    result : dict
+        Dictionary with keys: 'id', 'pDetect', 'model_cat', 'n_fits'
+    """
+    # Get source info
+    model_cat = source_fits.iloc[0]['model_cat']
+    n_fits = len(source_fits)
+    
+    # Compute detection probability
+    try:
+        det_prob = compute_gaia_detection_probability(
+            model_fluxes, wavelengths, av_law, source_fits, gaia_filter,
+            is_galaxy=is_galaxy, n_samples=n_samples, return_per_model=False
+        )
+    except Exception as e:
+        det_prob = np.nan
+    
+    return {
+        'id': source_id,
+        'pDetect': det_prob,
+        'model_cat': model_cat,
+        'n_fits': n_fits
+    }
+
+
+def compute_detection_probabilities_all_sources(fitres, model_fluxes, wavelengths, 
+                                                 av_law, gaia_filter, 
+                                                 is_galaxy=False, n_samples=5,
+                                                 max_rank=5, n_workers=1, verbose=True):
+    """
+    Compute Gaia detection probabilities for all sources in fit results.
+    
+    Loops over each source, computes overall detection probability, and returns
+    a DataFrame with results.
+    
+    Parameters
+    ----------
+    fitres : pandas.DataFrame
+        Fit results dataframe from io.load_batchfit_dir()
+        Must contain columns: 'id', 'fit_rank', 'chi2', 'sc', 'av'
+        For galaxy models, must also contain: 'imp_flux_H'
+    model_fluxes : np.ndarray
+        Model SED fluxes, shape (N_models, N_wavelengths)
+    wavelengths : np.ndarray
+        Wavelength grid in microns
+    av_law : np.ndarray
+        Extinction law (A_lambda / A_V) for each wavelength
+    gaia_filter : dict or tuple
+        Gaia filter data (dict with 'wavelength', 'transmission', 'zeropoint' keys
+        or tuple of (wavelength, transmission, zeropoint))
+    is_galaxy : bool, optional
+        If True, use H-band scaling for galaxy models (default: False)
+    n_samples : int, optional
+        Number of Monte Carlo samples per source (default: 5)
+    max_rank : int, optional
+        Maximum fit rank to use (default: 5)
+    n_workers : int, optional
+        Number of parallel workers. Use 1 for serial processing (default: 1),
+        -1 for all available cores, or specify number of cores to use.
+    verbose : bool, optional
+        Print progress (default: True)
+    
+    Returns
+    -------
+    results : pandas.DataFrame
+        DataFrame with columns:
+        - 'id': Source ID (same as in fitres)
+        - 'pDetect': Detection probability (0-1)
+        - 'model_cat': Model category (YSO, gal, etc.)
+        - 'n_fits': Number of fits used (should be <= max_rank)
+    
+    Examples
+    --------
+    # For YSO sources
+    results = compute_detection_probabilities_all_sources(
+        fitres, yso_fluxes, wavelengths, av_law, gaia_filter,
+        is_galaxy=False, n_samples=5
+    )
+    
+    # For galaxy sources
+    results = compute_detection_probabilities_all_sources(
+        fitres, gal_fluxes, wavelengths, av_law, gaia_filter,
+        is_galaxy=True, n_samples=5
+    )
+    """
+    import pandas as pd
+    
+    # Filter to requested fit ranks and rename columns ONCE
+    fitres_filtered = fitres[fitres['fit_rank'] <= max_rank].copy()
+    fitres_filtered['sc_best'] = fitres_filtered['sc']
+    fitres_filtered['av_best'] = fitres_filtered['av']
+    
+    # **KEY OPTIMIZATION**: Group by source ID once instead of filtering N times
+    grouped = fitres_filtered.groupby('id', sort=False)
+    source_ids = list(grouped.groups.keys())
+    n_sources = len(source_ids)
+    
+    if verbose:
+        print(f"Computing detection probabilities for {n_sources} sources...")
+        print(f"Model type: {'Galaxy' if is_galaxy else 'YSO/SPS'}")
+        print(f"N_samples per source: {n_samples}")
+        print(f"N_models: {model_fluxes.shape[0]}")
+        print(f"N_workers: {n_workers if n_workers != -1 else 'all cores'}")
+    
+    # Choose serial or parallel processing
+    if n_workers == 1:
+        # Serial processing
+        results_list = []
+        for i, source_id in enumerate(source_ids):
+            source_fits = grouped.get_group(source_id)
+            result = _process_single_source(
+                source_id, source_fits, model_fluxes, wavelengths,
+                av_law, gaia_filter, is_galaxy, n_samples
+            )
+            results_list.append(result)
+            
+            # Progress update
+            if verbose and (i + 1) % 100 == 0:
+                print(f"  Processed {i + 1}/{n_sources} sources...")
+    else:
+        # Parallel processing
+        from joblib import Parallel, delayed
+        from tqdm import tqdm
+        
+        if verbose:
+            print(f"  Starting parallel processing...")
+        
+        # Use threading backend to avoid pickling issues with complex objects
+        # Threading works well here since compute_gband_flux calls are GIL-releasing numpy ops
+        results_list = Parallel(n_jobs=n_workers, backend='threading', verbose=0)(
+            delayed(_process_single_source)(
+                source_id, grouped.get_group(source_id), 
+                model_fluxes, wavelengths, av_law, gaia_filter, 
+                is_galaxy, n_samples
+            )
+            for source_id in tqdm(source_ids, disable=not verbose, 
+                                  desc="Processing sources", unit="source")
+        )
+    
+    if verbose:
+        print(f"✓ Completed all {n_sources} sources")
+    
+    # Convert list of dicts to DataFrame
+    import pandas as pd
+    results = pd.DataFrame(results_list)
+    
+    if verbose:
+        print(f"\nSummary statistics:")
+        print(f"  Mean pDetect: {results['pDetect'].mean():.3f}")
+        print(f"  Median pDetect: {results['pDetect'].median():.3f}")
+        print(f"  Min pDetect: {results['pDetect'].min():.3f}")
+        print(f"  Max pDetect: {results['pDetect'].max():.3f}")
+    
+    return results
+
+
+def explore_model_fits(fits_path):
+    """
+    Explore the structure of a model SED FITS file.
+    
+    Parameters
+    ----------
+    fits_path : str
+        Path to the FITS file containing model SED
+    
+    Returns
+    -------
+    None (prints information about the FITS file structure)
+    """
+    from astropy.io import fits
+    
+    print(f"Exploring FITS file: {fits_path}\n")
+    
+    with fits.open(fits_path) as hdul:
+        # Print overall structure
+        print("FITS file structure:")
+        print(hdul.info())
+        print("\n" + "="*60 + "\n")
+        
+        # Explore each HDU
+        for i, hdu in enumerate(hdul):
+            print(f"HDU {i}: {hdu.name}")
+            print(f"  Type: {type(hdu)}")
+            
+            # Print header info
+            if len(hdu.header) > 0:
+                print(f"  Header keys: {list(hdu.header.keys())[:10]}...")  # First 10 keys
+            
+            # Print data info
+            if hdu.data is not None:
+                print(f"  Data shape: {hdu.data.shape}")
+                print(f"  Data type: {hdu.data.dtype}")
+                
+                # If it's a table, print column names
+                if hasattr(hdu.data, 'columns'):
+                    print(f"  Columns: {hdu.data.columns.names}")
+                
+                # Show a sample of the data
+                print(f"  Data sample:")
+                if hasattr(hdu.data, 'columns'):
+                    # Table data
+                    for col in hdu.data.columns.names[:5]:  # First 5 columns
+                        print(f"    {col}: {hdu.data[col][:5]}")
+                else:
+                    # Array data
+                    print(f"    {hdu.data.flat[:10]}")
+            
+            print("\n" + "-"*60 + "\n")
+    
+    return

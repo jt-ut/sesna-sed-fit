@@ -784,7 +784,165 @@ def read_SESNA_SEDFIT_ascii(path_catalog_hdf5, startindex=None, endindex=None):
     
     return output_data
 
-
+def read_SESNA_SEDFIT_INPUT(input_path_hdf5, startindex=None, endindex=None, tables=None):
+    """
+    Read SESNA SED fitting input data from HDF5 file(s).
+    
+    Reads SESNA catalog data from one or more HDF5 files and returns the data
+    as a dictionary of pandas DataFrames, one per table. Optionally loads only
+    a subset of tables and/or a subset of rows (for single file input).
+    
+    Parameters
+    ----------
+    input_path_hdf5 : str or list of str
+        Path(s) to HDF5 file(s) containing catalog data.
+        Expected filename format: <region>_catalog_ipac1_SEDFIT_INPUT.hdf5
+        - If str: reads single file, startindex/endindex apply
+        - If list: reads multiple files and row-concatenates, startindex/endindex ignored
+    startindex : int, optional
+        Starting row index (inclusive). Only applies for single file input.
+        If None, starts from 0. Default is None.
+    endindex : int, optional
+        Ending row index (inclusive). Only applies for single file input.
+        If None, reads to end of file. Default is None.
+    tables : list of str, optional
+        Which tables to load from the HDF5 file(s).
+        If None, loads all available tables plus 'CATALOG'.
+        Can include 'CATALOG' to generate catalog name column from filename.
+        Default is None.
+    
+    Returns
+    -------
+    dict of pandas.DataFrame
+        Dictionary with table names as keys and DataFrames as values.
+        If 'CATALOG' is requested (or tables=None), includes a 'CATALOG' key
+        with a single-column DataFrame containing the region name for each row.
+    
+    Notes
+    -----
+    The 'CATALOG' table is special - it's not stored in the HDF5 file but is
+    generated from the filename by extracting everything before
+    '_catalog_ipac1_SEDFIT_INPUT.hdf5'.
+    
+    When multiple files are provided, all tables are row-concatenated with
+    reset indices.
+    
+    Examples
+    --------
+    >>> # Read entire file
+    >>> data = read_SESNA_SEDFIT_INPUT('AFGL 490_catalog_ipac1_SEDFIT_INPUT.hdf5')
+    >>> data.keys()
+    dict_keys(['ID', 'COORDS', 'FNU', 'SIGMA_FNU', ..., 'CATALOG'])
+    
+    >>> # Read specific tables and row range
+    >>> data = read_SESNA_SEDFIT_INPUT(
+    ...     'catalog.hdf5',
+    ...     startindex=0,
+    ...     endindex=999,
+    ...     tables=['ID', 'COORDS', 'FNU']
+    ... )
+    
+    >>> # Read multiple files
+    >>> data = read_SESNA_SEDFIT_INPUT([
+    ...     'AFGL 490_catalog_ipac1_SEDFIT_INPUT.hdf5',
+    ...     'Serpens_catalog_ipac1_SEDFIT_INPUT.hdf5'
+    ... ])
+    
+    >>> # Column-stack tables together
+    >>> combined = pd.concat(data.values(), axis=1)
+    """
+    # Convert single path to list for uniform handling
+    if isinstance(input_path_hdf5, str):
+        file_paths = [input_path_hdf5]
+        single_file = True
+    else:
+        file_paths = input_path_hdf5
+        single_file = False
+    
+    # Warn if startindex/endindex provided for multiple files
+    if not single_file and (startindex is not None or endindex is not None):
+        warnings.warn(
+            "startindex and endindex are ignored when input_path_hdf5 is a list of files",
+            UserWarning
+        )
+    
+    # Determine if CATALOG should be included
+    include_catalog = False
+    if tables is None:
+        include_catalog = True
+    elif 'CATALOG' in tables:
+        include_catalog = True
+        # Remove 'CATALOG' from tables list since it's not in HDF5
+        tables = [t for t in tables if t != 'CATALOG']
+    
+    # Read data from each file
+    file_data_list = []
+    
+    for file_path in file_paths:
+        # Extract catalog name from filename
+        filename = os.path.basename(file_path)
+        catalog_name = filename.replace('_catalog_ipac1_SEDFIT_INPUT.hdf5', '')
+        
+        with pd.HDFStore(file_path, 'r') as store:
+            # Determine which tables to load
+            if tables is None:
+                # Load all tables except NSOURCES (metadata)
+                available_tables = [key.strip('/') for key in store.keys()]
+                tables_to_load = [t for t in available_tables if t != 'NSOURCES']
+            else:
+                tables_to_load = tables
+            
+            # Determine row range (only for single file)
+            if single_file:
+                if startindex is None:
+                    startindex = 0
+                
+                # Get total number of rows
+                n_total_rows = store.get('NSOURCES')['NSOURCES'][0]
+                
+                if endindex is None:
+                    endindex = n_total_rows - 1
+                else:
+                    # Cap endindex at the last available row
+                    endindex = min(endindex, n_total_rows - 1)
+                
+                start = startindex
+                stop = endindex + 1  # pandas stop is exclusive
+            else:
+                # Load all rows for multiple files
+                start = None
+                stop = None
+            
+            # Load each table
+            file_data = {}
+            for table_name in tables_to_load:
+                if start is not None and stop is not None:
+                    df = store.select(table_name, start=start, stop=stop)
+                else:
+                    df = store.select(table_name)
+                file_data[table_name] = df
+            
+            # Add CATALOG if requested
+            if include_catalog:
+                n_rows = len(file_data[tables_to_load[0]])
+                catalog_df = pd.DataFrame({'CATALOG': [catalog_name] * n_rows})
+                file_data['CATALOG'] = catalog_df
+        
+        file_data_list.append(file_data)
+    
+    # If single file, return as is
+    if single_file:
+        return file_data_list[0]
+    
+    # If multiple files, row-concatenate each table
+    result = {}
+    table_names = file_data_list[0].keys()
+    
+    for table_name in table_names:
+        dfs_to_concat = [file_dict[table_name] for file_dict in file_data_list]
+        result[table_name] = pd.concat(dfs_to_concat, axis=0, ignore_index=True)
+    
+    return result
 
 def read_fit_parm(filename):
     """
@@ -1133,119 +1291,6 @@ def save_batchfit_results_hdf5(arrays, fitparm, startindex, endindex):
     return filepath
 
 
-# def load_batchfit_results_as_dataframe(filepath):
-#     """
-#     Load batch fit results and return as long-format DataFrame.
-    
-#     Converts HDF5 fit results into a pandas DataFrame with one row per fit.
-#     Uses efficient numpy operations for fast loading and reshaping.
-    
-#     Parameters
-#     ----------
-#     filepath : str
-#         Path to HDF5 file created by save_batchfit_results_hdf5.
-    
-#     Returns
-#     -------
-#     pandas.DataFrame
-#         Long-format DataFrame with one row per fit, columns organized as:
-        
-#         Catalog information:
-#         - catalog: Catalog/region name
-        
-#         Source information:
-#         - id: Source identifier string
-#         - nvalid: Number of valid detections
-        
-#         Fit information:
-#         - model_cat: Model category
-#         - fit_rank: Fit ranking (1=best, 2=second best, etc.)
-#         - chi2: Chi-squared value
-#         - av: Visual extinction A_V
-#         - sc: Scale factor
-#         - model_dir: Model directory path
-#         - model_name: Model name
-#         - model_id: Model ID
-        
-#         Model fluxes (one column per band):
-#         - model_flux_J, model_flux_H, model_flux_Ks
-#         - model_flux_3_6, model_flux_4_5, model_flux_5_8, model_flux_8_0
-#         - model_flux_24
-        
-#         Imputed fluxes (one column per band):
-#         - imp_flux_J, imp_flux_H, imp_flux_Ks
-#         - imp_flux_3_6, imp_flux_4_5, imp_flux_5_8, imp_flux_8_0
-#         - imp_flux_24
-    
-#     Examples
-#     --------
-#     >>> df = load_batchfit_results_as_dataframe('Serpens_SEDFIT-YSO_0000000-0009999.hdf5')
-#     >>> print(df.shape)
-#     (50000, 27)  # 10000 sources × 5 fits = 50000 rows, 27 columns
-#     >>> 
-#     >>> # Get only best fits
-#     >>> best_fits = df[df['fit_rank'] == 1]
-#     >>> 
-#     >>> # Get all good fits (chi2 < 50)
-#     >>> good_fits = df[df['chi2'] < 50]
-#     >>> 
-#     >>> # Access specific source's fits
-#     >>> source_fits = df[df['id'] == 'J033021.04+582049.3']
-#     """
-#     # Band names in order
-#     band_names = ['J', 'H', 'Ks', '3_6', '4_5', '5_8', '8_0', '24']
-    
-#     # Load all arrays from HDF5
-#     with h5py.File(filepath, 'r') as f:
-#         arrays = {key: f[key][:] for key in f.keys()}
-    
-#     # Decode byte strings to regular strings
-#     string_keys = ['CATALOG', 'ID', 'MODEL_CAT', 'MODEL_DIR', 'MODEL_NAME']
-#     for key in string_keys:
-#         if key in arrays and arrays[key].dtype.kind == 'S':  # Byte string
-#             arrays[key] = np.char.decode(arrays[key], 'utf-8')
-    
-#     nsources, nkeep, nbands = arrays['MODEL_FLUX'].shape
-#     n_rows = nsources * nkeep
-    
-#     # Create fit_rank array efficiently (starting at 1)
-#     fit_ranks = np.tile(np.arange(1, nkeep + 1), nsources)
-    
-#     # Build DataFrame dict with flattened/repeated arrays
-#     # Organized in groups: source info, fit info, model fluxes, imputed fluxes
-#     data = {}
-    
-#     # Catalog name (first column)
-#     data['catalog'] = np.repeat(arrays['CATALOG'], nkeep)
-    
-#     # Source information
-#     data['id'] = np.repeat(arrays['ID'], nkeep)
-#     data['nvalid'] = np.repeat(arrays['NVALID'], nkeep)
-    
-#     # Fit information
-#     data['model_cat'] = np.repeat(arrays['MODEL_CAT'], nkeep)
-#     data['fit_rank'] = fit_ranks
-#     data['chi2'] = arrays['CHI2'].ravel()
-#     data['av'] = arrays['AV'].ravel()
-#     data['sc'] = arrays['SC'].ravel()
-#     data['model_dir'] = arrays['MODEL_DIR'].ravel()
-#     data['model_name'] = arrays['MODEL_NAME'].ravel()
-#     data['model_id'] = arrays['MODEL_ID'].ravel()
-    
-#     # Reshape 3D flux arrays to 2D for easier column extraction
-#     model_flux_2d = arrays['MODEL_FLUX'].reshape(n_rows, nbands)
-#     imputed_flux_2d = arrays['IMPUTED_FLUX'].reshape(n_rows, nbands)
-    
-#     # Add model flux columns (one per band)
-#     for band_idx, band_name in enumerate(band_names):
-#         data[f'model_flux_{band_name}'] = model_flux_2d[:, band_idx]
-    
-#     # Add imputed flux columns (one per band)
-#     for band_idx, band_name in enumerate(band_names):
-#         data[f'imp_flux_{band_name}'] = imputed_flux_2d[:, band_idx]
-    
-#     return pd.DataFrame(data)
-
 def save_batch_failures(failed_sources, fitparm, startindex, endindex):
     """
     Save list of failed sources to text file.
@@ -1325,88 +1370,6 @@ def save_batch_failures(failed_sources, fitparm, startindex, endindex):
             f.write(f"{fail['source_id']:<30s} | {fail['error_type']:<20s} | {fail['error_message']}\n")
     
     return filepath
-
-# def load_batchfit_dir(dirpaths):
-#     """
-#     Load and concatenate batch fit results from one or more directories.
-    
-#     Searches directories for HDF5 files matching the pattern:
-#     <region>_SEDFIT-<model>_<start>-<end>.hdf5
-    
-#     Loads files in ascending order by start index and concatenates results.
-    
-#     Parameters
-#     ----------
-#     dirpaths : str or list of str
-#         Path to directory (or list of directory paths) containing HDF5 result files.
-#         Files should match pattern: *_SEDFIT-*_NNNNNNN-NNNNNNN.hdf5
-    
-#     Returns
-#     -------
-#     pandas.DataFrame
-#         Concatenated DataFrame containing all results from all files in all
-#         directories, preserving ascending order by start index within each
-#         directory, then across directories in the order provided.
-    
-#     Examples
-#     --------
-#     >>> # Load from single directory
-#     >>> df = load_batchfit_dir('/path/to/results')
-#     >>> 
-#     >>> # Load from multiple directories
-#     >>> df = load_batchfit_dir(['/path/to/serpens', '/path/to/aquila'])
-#     >>> 
-#     >>> # Check what got loaded
-#     >>> print(df['catalog'].unique())
-#     """
-#     # Convert single path to list for uniform processing
-#     if isinstance(dirpaths, (str, Path)):
-#         dirpaths = [dirpaths]
-    
-#     # Pattern to match filenames and extract start index
-#     # Format: <region>_SEDFIT-<model>_<start>-<end>.hdf5
-#     pattern = re.compile(r'.*_SEDFIT-.*_(\d{7})-\d{7}\.hdf5$')
-    
-#     all_dfs = []
-    
-#     for dirpath in dirpaths:
-#         dirpath = Path(dirpath)
-        
-#         if not dirpath.exists():
-#             raise FileNotFoundError(f"Directory not found: {dirpath}")
-        
-#         if not dirpath.is_dir():
-#             raise NotADirectoryError(f"Not a directory: {dirpath}")
-        
-#         # Find all matching HDF5 files and extract their start indices
-#         files_with_indices = []
-#         for filepath in dirpath.glob('*.hdf5'):
-#             match = pattern.match(filepath.name)
-#             if match:
-#                 start_index = int(match.group(1))
-#                 files_with_indices.append((start_index, filepath))
-        
-#         if not files_with_indices:
-#             print(f"Warning: No matching HDF5 files found in {dirpath}")
-#             continue
-        
-#         # Sort by start index (ascending)
-#         files_with_indices.sort(key=lambda x: x[0])
-        
-#         # Load each file and collect dataframes
-#         for start_index, filepath in files_with_indices:
-#             print(f"Loading {filepath.name}...")
-#             df = load_batchfit_results_as_dataframe(str(filepath))
-#             all_dfs.append(df)
-    
-#     # Concatenate all dataframes
-#     if not all_dfs:
-#         raise ValueError("No data loaded. Check that directories contain matching HDF5 files.")
-    
-#     result = pd.concat(all_dfs, axis=0, ignore_index=True)
-#     print(f"\nLoaded {len(all_dfs)} files, total {len(result):,} rows")
-    
-#     return result
 
 def load_batchfit_results_as_dataframe(filepath, max_fit_rank=None):
     """
@@ -1538,98 +1501,6 @@ def load_batchfit_results_as_dataframe(filepath, max_fit_rank=None):
     
     return pd.DataFrame(data)
 
-# def load_batchfit_dir(dirpaths, max_fit_rank=None):
-#     """
-#     Load and concatenate batch fit results from one or more directories.
-    
-#     Searches directories for HDF5 files matching the pattern:
-#     <region>_SEDFIT-<model>_<start>-<end>.hdf5
-    
-#     Loads files in ascending order by start index and concatenates results.
-    
-#     Parameters
-#     ----------
-#     dirpaths : str or list of str
-#         Path to directory (or list of directory paths) containing HDF5 result files.
-#         Files should match pattern: *_SEDFIT-*_NNNNNNN-NNNNNNN.hdf5
-#     max_fit_rank : int, optional
-#         Maximum fit rank to include. If provided, only fits with 
-#         fit_rank <= max_fit_rank are returned. If None (default), 
-#         all fit ranks are returned.
-    
-#     Returns
-#     -------
-#     pandas.DataFrame
-#         Concatenated DataFrame containing all results from all files in all
-#         directories, preserving ascending order by start index within each
-#         directory, then across directories in the order provided.
-    
-#     Examples
-#     --------
-#     >>> # Load all fits from single directory
-#     >>> df = load_batchfit_dir('/path/to/results')
-#     >>> 
-#     >>> # Load only best fits from multiple directories
-#     >>> df = load_batchfit_dir(['/path/to/serpens', '/path/to/aquila'], 
-#     ...                         max_fit_rank=1)
-#     >>> 
-#     >>> # Load top 3 fits
-#     >>> df = load_batchfit_dir('/path/to/results', max_fit_rank=3)
-#     >>> 
-#     >>> # Check what got loaded
-#     >>> print(df['catalog'].unique())
-#     >>> print(df['fit_rank'].unique())
-#     """
-#     # Convert single path to list for uniform processing
-#     if isinstance(dirpaths, (str, Path)):
-#         dirpaths = [dirpaths]
-    
-#     # Pattern to match filenames and extract start index
-#     # Format: <region>_SEDFIT-<model>_<start>-<end>.hdf5
-#     pattern = re.compile(r'.*_SEDFIT-.*_(\d{7})-\d{7}\.hdf5$')
-    
-#     all_dfs = []
-    
-#     for dirpath in dirpaths:
-#         dirpath = Path(dirpath)
-        
-#         if not dirpath.exists():
-#             raise FileNotFoundError(f"Directory not found: {dirpath}")
-        
-#         if not dirpath.is_dir():
-#             raise NotADirectoryError(f"Not a directory: {dirpath}")
-        
-#         # Find all matching HDF5 files and extract their start indices
-#         files_with_indices = []
-#         for filepath in dirpath.glob('*.hdf5'):
-#             match = pattern.match(filepath.name)
-#             if match:
-#                 start_index = int(match.group(1))
-#                 files_with_indices.append((start_index, filepath))
-        
-#         if not files_with_indices:
-#             print(f"Warning: No matching HDF5 files found in {dirpath}")
-#             continue
-        
-#         # Sort by start index (ascending)
-#         files_with_indices.sort(key=lambda x: x[0])
-        
-#         # Load each file and collect dataframes
-#         for start_index, filepath in files_with_indices:
-#             print(f"Loading {filepath.name}...")
-#             df = load_batchfit_results_as_dataframe(str(filepath), max_fit_rank=max_fit_rank)
-#             all_dfs.append(df)
-    
-#     # Concatenate all dataframes
-#     if not all_dfs:
-#         raise ValueError("No data loaded. Check that directories contain matching HDF5 files.")
-    
-#     result = pd.concat(all_dfs, axis=0, ignore_index=True)
-    
-#     rank_info = f" (fit_rank <= {max_fit_rank})" if max_fit_rank is not None else " (all ranks)"
-#     print(f"\nLoaded {len(all_dfs)} files{rank_info}, total {len(result):,} rows")
-    
-#     return result
 
 
 
@@ -1896,3 +1767,7 @@ def load_batchfit_dir(dirpaths, max_fit_rank=None, n_workers=None, verbose=True)
     final_result = pd.concat(result_chunks, axis=0, ignore_index=True)
     
     return final_result
+
+
+
+
