@@ -851,27 +851,6 @@ def compute_detection_probabilities_all_sources(fitres, model_fluxes, wavelength
         print(f"N_models: {model_fluxes.shape[0]}")
         print(f"N_workers: {n_workers if n_workers != -1 else 'all cores'}")
     
-    # **FIX FOR MEMMAP PICKLING**: Convert any memory-mapped arrays to regular arrays
-    # This ensures they can be pickled and sent to worker processes
-    model_fluxes = np.array(model_fluxes)
-    wavelengths = np.array(wavelengths)
-    av_law = np.array(av_law)
-    
-    # Handle gaia_filter - convert to dict format and ensure arrays are not memmaps
-    if isinstance(gaia_filter, dict):
-        gaia_filter = {
-            'wavelength': np.array(gaia_filter['wavelength']),
-            'transmission': np.array(gaia_filter['transmission']),
-            'zeropoint': gaia_filter['zeropoint']
-        }
-    else:
-        # Assume tuple format (wavelength, transmission, zeropoint)
-        gaia_filter = {
-            'wavelength': np.array(gaia_filter[0]),
-            'transmission': np.array(gaia_filter[1]),
-            'zeropoint': gaia_filter[2]
-        }
-    
     # Choose serial or parallel processing
     if n_workers == 1:
         # Serial processing
@@ -895,9 +874,9 @@ def compute_detection_probabilities_all_sources(fitres, model_fluxes, wavelength
         if verbose:
             print(f"  Starting parallel processing...")
         
-        # Use loky backend (multiprocessing) for true parallelism across CPU cores
-        # DataFrames will be pickled once per worker process (not per task)
-        results_list = Parallel(n_jobs=n_workers, backend='multiprocessing', verbose=0)(
+        # Use threading backend to avoid pickling issues with complex objects
+        # Threading works well here since compute_gband_flux calls are GIL-releasing numpy ops
+        results_list = Parallel(n_jobs=n_workers, backend='threading', verbose=0)(
             delayed(_process_single_source)(
                 source_id, grouped.get_group(source_id), 
                 model_fluxes, wavelengths, av_law, gaia_filter, 
@@ -978,4 +957,3 @@ def explore_model_fits(fits_path):
             print("\n" + "-"*60 + "\n")
     
     return
-
