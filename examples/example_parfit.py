@@ -5,6 +5,9 @@ path_fitparm = "/Users/jtaylor/Dropbox/Research/SESNA_SEDFit_v2/fit_parm/yso/fit
 startindex = 0 
 endindex = 999
 
+fit.fit_and_save_batch(path_fitparm, 0, 999, n_workers=10, log_interval=100)
+
+
 ## Read parameter files
 fitparm = io.read_fit_parm(path_fitparm) 
 extparm = io.read_extinction_parm(fitparm['path_extinction_parm'])
@@ -24,3 +27,5 @@ if len(fitresultlist) > 0:
 if len(failed_sources) > 0:
     fail_path = io.save_batch_failures(failed_sources, fitparm, startindex, endindex)
     print(f"Failure log saved: {fail_path}")
+
+fit.generate_batch_ranges(batch_size=50000, fitparm=path_fitparm)

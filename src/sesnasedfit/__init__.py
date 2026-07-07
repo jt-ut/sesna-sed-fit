@@ -6,6 +6,9 @@ from . import io
 from . import fit 
 from . import gutermuth_scoring
 from . import gaia_detect
+from . import sed_utils
+from . import explore_fits
+from . import gaia_detect_new
 
 
 __version__ = "0.1.0"

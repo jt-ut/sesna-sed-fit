@@ -24,191 +24,206 @@ from pathlib import Path
 from .sed_utils import scale_sed_distance_extinction, convolve_sed_with_filter, flux_to_magnitude
 
 
+## ======== Load Gaia's G-Band filter into a module constant ========
+def _load_gaia_g_filter(passband_file, zeropoint_file, system='VEGAMAG'):
+    """
+    Load Gaia G-band filter transmission curve and zero point.
+    
+    Parameters
+    ----------
+    passband_file : str
+        Path to passband.dat file
+    zeropoint_file : str
+        Path to zeropt.dat file
+    system : str, optional
+        Photometric system: 'VEGAMAG' or 'AB' (default: 'VEGAMAG')
+    
+    Returns
+    -------
+    gaia_filter : dict
+        Dictionary with keys:
+        - 'wavelength': Wavelength in microns (array)
+        - 'transmission': G-band transmission curve (array)
+        - 'zeropoint': Zero point magnitude (scalar)
+        - 'system': Photometric system used (str)
+    
+    Examples
+    --------
+    gaia_filter = load_gaia_g_filter('passband.dat', 'zeropt.dat')
+    # Access components:
+    gaia_filter['wavelength']
+    gaia_filter['transmission']
+    gaia_filter['zeropoint']
+    """
+    # Load passband data
+    # Columns: lambda(nm), GPb, e_GPb, BPPb, e_BPPb, RPPb, e_RPPb
+    data = np.loadtxt(passband_file)
+    wavelength_nm = data[:, 0]
+    g_transmission = data[:, 1]
+    
+    # Filter out undefined values (99.99)
+    valid = g_transmission < 90.0
+    wavelength_nm = wavelength_nm[valid]
+    g_transmission = g_transmission[valid]
+    
+    # Convert wavelength to microns
+    wavelength_micron = wavelength_nm / 1000.0
+    
+    # Load zero point
+    with open(zeropoint_file, 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            if system in line:
+                parts = line.split()
+                zeropoint = float(parts[0])  # G band zero point
+                break
+    
+    return {
+        'wavelength': wavelength_micron,
+        'transmission': g_transmission,
+        'zeropoint': zeropoint,
+        'system': system
+    }
+
+
 # Pre-load Gaia G-band filter data (GaiaDR3)
 _GAIA_FILTER_DIR = Path(__file__).parent / 'data' / 'GaiaEDR3_passbands_zeropoints_version2'
-
-# Load passband data
-# Columns: lambda(nm), GPb, e_GPb, BPPb, e_BPPb, RPPb, e_RPPb
-_passband_data = np.loadtxt(_GAIA_FILTER_DIR / 'passband.dat')
-_wavelength_nm = _passband_data[:, 0]
-_transmission = _passband_data[:, 1]
-
-# Filter out undefined values (99.99)
-_valid = _transmission < 90.0
-_wavelength_nm = _wavelength_nm[_valid]
-_transmission = _transmission[_valid]
-
-# Load zero point (using AB magnitude system)
-_system = 'AB'
-with open(_GAIA_FILTER_DIR / 'zeropt.dat', 'r') as f:
-    lines = f.readlines()
-    for line in lines:
-        if _system in line:
-            parts = line.split()
-            _zeropoint = float(parts[0])  # G-band zero point
-            break
-
-GAIA_G_FILTER = {
-    'wavelength': _wavelength_nm / 1000.0,  # Convert nm to microns
-    'transmission': _transmission / _transmission.max(),  # Normalize to peak = 1
-    'zeropoint': _zeropoint
-}
-"""Pre-loaded Gaia G-band filter from GaiaDR3.
-
-Dictionary with keys:
-    - 'wavelength': Wavelength grid in microns (array)
-    - 'transmission': Normalized transmission curve, peak=1 (array)
-    - 'zeropoint': Magnitude zero point (float)
-
-This filter is loaded once at module import and ready for immediate use.
-
-Example
--------
->>> from sesnasedfit.gaia_detect import GAIA_G_FILTER
->>> p_detect = compute_detection_prob(
-...     model_fluxes, wavelengths, av_law, fitresult,
-...     gaia_filter=GAIA_G_FILTER, ...
-... )
-"""
-
+GAIA_G_FILTER = _load_gaia_g_filter(_GAIA_FILTER_DIR / 'passband.dat', _GAIA_FILTER_DIR / 'zeropt.dat', system='AB')
 # Clean up temporary variables
-del _GAIA_FILTER_DIR, _passband_data, _wavelength_nm, _transmission, _valid, _system, _zeropoint
-
+del _GAIA_FILTER_DIR
 
 def compute_detection_prob(model_fluxes, wavelengths, av_law, fitresult, 
                            gaia_filter=GAIA_G_FILTER, is_galaxy=False, 
                            n_samples=5, return_per_model=False):
     """
-    Compute Gaia detection probability for a single source.
+    Compute Gaia detection probability for model(s) given fit results for a source.
     
-    For YSO/SPS models: Samples extinction (AV) and brightness (SC) from fit results,
-    applies them to each model, convolves with Gaia G filter, and checks if G < 20.7.
-    
-    For galaxy models: Additionally samples H-band flux from fit results and uses that
-    to normalize the models before applying extinction.
+    Uses chi2-weighted sampling of (sc_best, av_best) pairs from fit results,
+    scales ALL models simultaneously, computes G-band magnitudes, and determines detection rate.
     
     Parameters
     ----------
     model_fluxes : np.ndarray
-        Model SED fluxes, shape (N_models, N_wavelengths) in LINEAR units (mJy)
+        Model SED fluxes in LINEAR units (mJy)
+        Shape: (N_models, N_wavelengths) or (N_wavelengths,) for single model
     wavelengths : np.ndarray
         Wavelength grid in microns
     av_law : np.ndarray
         Extinction law (A_lambda / A_V) for each wavelength
     fitresult : pandas.DataFrame
         Fit results for one source (top K fits for this source)
-        Must contain columns: 'model_idx', 'chi2', 'sc_best', 'av_best'
+        Must contain columns: 'sc_best', 'av_best', 'chi2'
         For galaxy models, must also contain: 'imp_flux_H'
     gaia_filter : dict or tuple, optional
         Gaia filter data (default: GAIA_G_FILTER). Can be:
         - dict with keys 'wavelength', 'transmission', 'zeropoint'
         - tuple of (wavelength, transmission, zeropoint)
     is_galaxy : bool, optional
-        If True, use H-band flux scaling for galaxy models (default: False)
+        If True, multiply scaled flux by imp_flux_H from sampled fit (default: False)
     n_samples : int, optional
-        Number of Monte Carlo samples to draw (default: 5)
+        Number of Monte Carlo samples (default: 5)
     return_per_model : bool, optional
-        If True, return detection probability per model (default: False)
-        If False, return overall detection probability across all models
+        If True, return detection probability for each model (default: True)
+        If False, return overall detection probability (fraction of models detected)
     
     Returns
     -------
-    detection_prob : float or np.ndarray
-        If return_per_model=False: Overall detection probability (0-1)
-        If return_per_model=True: Array of detection probabilities per model
+    detection_prob : np.ndarray or float
+        If return_per_model=True: Detection probability for each model, shape (N_models,)
+        If return_per_model=False: Overall detection probability (scalar)
+        For single model input, always returns scalar
     
     Notes
     -----
     Detection criterion: Gaia G < 20.7 mag (EDR3 limit)
     
-    For YSO/SPS models:
-        - Each fit provides (model_idx, AV, SC)
-        - We sample from the fits and apply to corresponding models
-    
-    For galaxy models:
-        - Each fit provides (model_idx, AV, H-band flux)
-        - We use H-band flux to normalize the model before extinction
-        - SC is derived from the H-band flux match
+    Algorithm:
+    1. Sample (sc_best, av_best, [h_band]) from fit results using chi2 weights
+    2. Apply these SAME parameters to ALL models simultaneously
+    3. Convolve all scaled models with Gaia G filter
+    4. Check which models would be detected (G < 20.7)
+    5. Repeat n_samples times and compute detection fraction per model
     """
-    # Parse gaia_filter
+    # Handle single model case
+    single_model = (model_fluxes.ndim == 1)
+    if single_model:
+        model_fluxes = model_fluxes.reshape(1, -1)
+    
+    n_models = model_fluxes.shape[0]
+    
+    # Extract fit parameters
+    if isinstance(fitresult, dict):
+        chi2 = np.array(fitresult['chi2'])
+        sc_best_vals = np.array(fitresult['sc_best'])
+        av_best_vals = np.array(fitresult['av_best'])
+        if is_galaxy:
+            h_band_vals = np.array(fitresult['imp_flux_H'])
+    else:
+        chi2 = fitresult['chi2'].values
+        sc_best_vals = fitresult['sc_best'].values
+        av_best_vals = fitresult['av_best'].values
+        if is_galaxy:
+            h_band_vals = fitresult['imp_flux_H'].values
+    
+    # Convert chi2 to sampling weights
+    weights = np.exp(-chi2 / 2.0)
+    weights /= weights.sum()
+    
+    # Parse gaia_filter (handle both dict and tuple formats)
     if isinstance(gaia_filter, dict):
         filter_wav = gaia_filter['wavelength']
         filter_trans = gaia_filter['transmission']
         zeropoint = gaia_filter['zeropoint']
     else:
+        # Legacy tuple format: (wavelength, transmission, zeropoint)
         filter_wav, filter_trans, zeropoint = gaia_filter
     
-    # Get fit parameters
-    model_indices = fitresult['model_idx'].values
-    av_values = fitresult['av_best'].values
-    sc_values = fitresult['sc_best'].values
-    chi2_values = fitresult['chi2'].values
+    # Count detections per model across all samples
+    detection_count = np.zeros(n_models)
     
-    # Convert chi2 to weights (lower chi2 = higher weight)
-    weights = np.exp(-chi2_values / 2.0)
-    weights /= weights.sum()
-    
-    # Sample from fits
-    n_fits = len(fitresult)
-    sample_indices = np.random.choice(n_fits, size=n_samples, replace=True, p=weights)
-    
-    # Initialize detection counter
-    if return_per_model:
-        n_models = model_fluxes.shape[0]
-        detection_count = np.zeros(n_models)
-    else:
-        detection_count = 0
-    
-    # Monte Carlo sampling
-    for idx in sample_indices:
-        model_idx = model_indices[idx]
-        av = av_values[idx]
-        sc = sc_values[idx]
+    for _ in range(n_samples):
+        # Sample ONE (sc_best, av_best, [h_band]) tuple for this iteration
+        fit_idx = np.random.choice(len(chi2), p=weights)
+        sc_best = sc_best_vals[fit_idx]
+        av_best = av_best_vals[fit_idx]
         
-        # Get the model SED
-        model_sed = model_fluxes[model_idx]
+        # Scale ALL models at once (vectorized operation)
+        flux_scaled_all = scale_sed_distance_extinction(model_fluxes, sc_best, av_best, av_law)
+        # Shape: (N_models, N_wavelengths)
         
-        # For galaxy models, scale by H-band flux
+        # If galaxy model: multiply ALL models by H-band flux from this fit
         if is_galaxy:
-            h_flux_obs = fitresult.iloc[idx]['imp_flux_H']
-            # Convolve model with H-band filter to get model H-band flux
-            # (Simplified: assume H-band is at ~1.65 microns)
-            h_idx = np.argmin(np.abs(wavelengths - 1.65))
-            h_flux_model = model_sed[h_idx]
-            # Scale model to match observed H-band
-            scale_factor = h_flux_obs / h_flux_model
-            model_sed = model_sed * scale_factor
+            h_band_flux = h_band_vals[fit_idx]
+            flux_scaled_all = flux_scaled_all * h_band_flux
         
-        # Apply extinction and distance scaling
-        scaled_sed = scale_sed_distance_extinction(model_sed, sc, av, av_law)
+        # Compute G-band flux for ALL models at once
+        flux_g_all = convolve_sed_with_filter(wavelengths, flux_scaled_all, filter_wav, filter_trans)
+        # Shape: (N_models,)
         
-        # Convolve with Gaia G filter
-        g_flux = convolve_sed_with_filter(wavelengths, scaled_sed, filter_wav, filter_trans)
+        # Convert to magnitudes for all models
+        mag_g_all = flux_to_magnitude(flux_g_all, zeropoint)
+        # Shape: (N_models,)
         
-        # Convert to magnitude
-        g_mag = flux_to_magnitude(g_flux, zeropoint)
+        # Check detection for all models (boolean array)
+        detected = (mag_g_all < 20.7)
+        # Shape: (N_models,) boolean
         
-        # Check detection (G < 20.7)
-        detected = g_mag < 20.7
-        
-        if return_per_model:
-            detection_count[model_idx] += detected
-        else:
-            detection_count += detected
+        # Increment detection count
+        detection_count += detected
     
-    # Compute probability
-    if return_per_model:
-        # Count how many times each model was sampled
-        model_sample_counts = np.bincount(model_indices[sample_indices], minlength=n_models)
-        # Avoid division by zero
-        detection_prob = np.zeros(n_models)
-        mask = model_sample_counts > 0
-        detection_prob[mask] = detection_count[mask] / model_sample_counts[mask]
+    # Compute detection probabilities
+    detection_probs = detection_count / n_samples
+    
+    # Return based on parameters
+    if single_model:
+        # Single model always returns scalar
+        return detection_probs[0]
+    elif return_per_model:
+        # Return per-model probabilities
+        return detection_probs
     else:
-        detection_prob = detection_count / n_samples
-    
-    return detection_prob
-
+        # Return overall probability (mean across models)
+        return detection_probs.mean()
 
 def _compute_detection_prob_single(source_id, fitresult, model_fluxes, wavelengths,
                                    av_law, gaia_filter=GAIA_G_FILTER, is_galaxy=False, 
@@ -220,48 +235,52 @@ def _compute_detection_prob_single(source_id, fitresult, model_fluxes, wavelengt
     
     Parameters
     ----------
-    source_id : str
+    source_id : str or int
         Source identifier
     fitresult : pandas.DataFrame
-        Fit results for one source (top K fits)
+        Fit results for one source (top K fits for this source)
     model_fluxes : np.ndarray
-        Model fluxes (N_models, N_wavelengths)
+        Model SED fluxes, shape (N_models, N_wavelengths)
     wavelengths : np.ndarray
-        Wavelength grid
+        Wavelength grid in microns
     av_law : np.ndarray
-        Extinction law
+        Extinction law (A_lambda / A_V) for each wavelength
     gaia_filter : dict, optional
         Gaia filter data (default: GAIA_G_FILTER)
-    is_galaxy : bool
-        Galaxy model flag
-    n_samples : int
-        Number of Monte Carlo samples
+    is_galaxy : bool, optional
+        If True, use H-band scaling for galaxy models (default: False)
+    n_samples : int, optional
+        Number of Monte Carlo samples (default: 5)
     
     Returns
     -------
     result : dict
         Dictionary with keys: 'id', 'pDetect', 'model_cat', 'n_fits'
+        If computation fails, 'pDetect' will be NaN
     """
-    # Compute detection probability
-    p_detect = compute_detection_prob(
-        model_fluxes, wavelengths, av_law, fitresult,
-        gaia_filter, is_galaxy=is_galaxy, n_samples=n_samples,
-        return_per_model=False
-    )
-    
-    # Determine model category from fitresult
+    # Get model category
     if 'model_cat' in fitresult.columns:
         model_cat = fitresult['model_cat'].iloc[0]
     else:
         model_cat = 'gal' if is_galaxy else 'yso'
     
+    n_fits = len(fitresult)
+    
+    # Compute detection probability with exception handling
+    try:
+        p_detect = compute_detection_prob(
+            model_fluxes, wavelengths, av_law, fitresult, gaia_filter,
+            is_galaxy=is_galaxy, n_samples=n_samples, return_per_model=False
+        )
+    except Exception as e:
+        p_detect = np.nan
+    
     return {
         'id': source_id,
         'pDetect': p_detect,
         'model_cat': model_cat,
-        'n_fits': len(fitresult)
+        'n_fits': n_fits
     }
-
 
 def compute_detection_probs_batch(fitresults, model_fluxes, wavelengths, 
                                   av_law, gaia_filter=GAIA_G_FILTER, 
@@ -417,3 +436,17 @@ def compute_detection_probs_batch(fitresults, model_fluxes, wavelengths,
         print(f"  Max pDetect: {results['pDetect'].max():.3f}")
     
     return results
+
+
+
+
+
+
+
+
+
+
+
+
+
+

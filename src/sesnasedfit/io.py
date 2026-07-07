@@ -33,8 +33,11 @@ from pathlib import Path
 # For parallel results loading 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
+from glob import glob
+from astropy.io import fits
 
 
+## ======= Functions for reading & processing Rob's catalog files, writing the data in a format for SED Fitter package ========
 
 def read_catalog_ipac1_txt(path_catalog_ipac1_txt, select_columns=None):
     """
@@ -132,262 +135,6 @@ def read_catalog_ipac1_txt(path_catalog_ipac1_txt, select_columns=None):
 
     return lines, hdr
 
-
-# def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5=None):
-#     """
-#     Format SESNA catalog data for SED fitting and save to HDF5.
-    
-#     This function reads a SESNA IPAC1 format catalog, extracts photometry from
-#     2MASS, IRAC, and MIPS bands, handles missing data by using survey upper 
-#     bounds or nearest-neighbor DCOMP90 values, and saves the formatted data
-#     to an HDF5 file suitable for SED fitting.
-    
-#     Processing steps:
-#     1. Extract multi-band photometry (J, H, KS, IRAC 3.6-8.0, MIPS 24)
-#     2. Handle missing 2MASS fluxes by substituting survey upper bounds
-#     3. Handle missing IRAC/MIPS fluxes by substituting DCOMP90 values
-#     4. Use spatial nearest neighbors for missing DCOMP90 values
-#     5. Save formatted tables to HDF5
-    
-#     Parameters
-#     ----------
-#     path_catalog_ipac1_txt : str
-#         Path to the input SESNA catalog in IPAC1 text format.
-#     distance_range_kpc : tuple of float
-#         (min_distance, max_distance) in kiloparsecs. This is stored as metadata
-#         indicating the distance range to the molecular cloud region.
-#     outpath_hdf5 : str, optional
-#         Directory path for output HDF5 file. If None, does not write to disk
-#         and instead returns the data as a dictionary. If provided, writes HDF5
-#         file with name <catalog>_SEDFIT_INPUT.hdf5.
-    
-#     Returns
-#     -------
-#     dict or None
-#         If outpath_hdf5 is None, returns dictionary containing:
-#         - ID: Source identifiers (SESNA names with 'SESNA ' prefix removed)
-#         - ROW: Row indices in the catalog
-#         - COORDS: RA and DEC coordinates
-#         - CLASS: Source classifications
-#         - AK: A_K extinction values
-#         - FNU: Flux densities in Jy for each band
-#         - SIGMA_FNU: Flux uncertainties in Jy
-#         - ORIGIN_FNU: Origin codes for each flux measurement
-#         - DISTANCE_RANGE_KPC: Distance range metadata
-#         - NSOURCES: Total number of sources
-        
-#         If outpath_hdf5 is provided, writes HDF5 file and returns None.
-    
-#     Notes
-#     -----
-#     ORIGIN_FNU codes indicate data provenance:
-#         1: Valid observed flux measurement
-#         2: Global survey upper bound (2MASS bands only)
-#         90: DCOMP90 value from same source
-#         91: DCOMP90 value from nearest spatial neighbor
-    
-#     For ORIGIN_FNU = 91, additional columns DCOMP90_NN_<band> store the 
-#     row index of the neighbor from which the value was taken.
-    
-#     Examples
-#     --------
-#     >>> format_SESNA_SEDFIT('catalog_ipac1.txt', (0.1, 2.0))
-#     >>> format_SESNA_SEDFIT('catalog_ipac1.txt', (0.1, 2.0), 
-#     ...                     outpath_hdf5='/path/to/output/')
-#     """
-#     ## Define the columns of the catalog file that we are importing
-#     # Temporarily define the filter names, these are used in various contexts
-#     filters_2MASS = ['J','H','KS']
-#     filters_IRAC = ['3_6','4_5','5_8','8_0']
-#     filters_MIPS = ['24']
-
-#     # Build the columns we're extracting from the text file
-#     select_columns = ['SESNA_NAME','ra','dec']
-#     for filter in filters_2MASS + filters_IRAC + filters_MIPS:
-#         select_columns.extend(['FNU_'+filter, 'SIGMA_FNU_'+filter])
-#     for filter in filters_IRAC + filters_MIPS:
-#         select_columns.append('DCOMP90_FNU_'+filter)
-#     select_columns.append('CLASS')
-#     select_columns.append('AK')
-
-#     ## Open the catalog file, import the selected columns
-#     print("Importing catalog %s ... " % path_catalog_ipac1_txt, end = '', flush=True)
-#     df, hdr = read_catalog_ipac1_txt(path_catalog_ipac1_txt, select_columns=select_columns)
-#     print("done")
-
-
-#     ## Check for duplicate names
-#     isdup = df['SESNA_NAME'].duplicated()
-#     if sum(isdup) > 0:
-#         print("Removing %d duplicate sources ... " % sum(isdup), end = '', flush=True)
-#         df = df[~isdup]
-#         print("done")
-
-
-#     ## Extract the SESNA_NAME, COORDS, CLASS, AK variables into their own dataframes, drop them from the original dataframe
-#     print("-- Extracting SESNA_NAME table ... ", end = '', flush=True)
-#     ID = df['SESNA_NAME'].copy()
-#     ID = ID.str.replace("SESNA ", "")
-#     ID = ID.str.strip()
-
-#     print("done")
-#     print("-- Extracting COORDS table ... ", end = '', flush=True)
-#     COORDS = df[['ra','dec']].copy()
-#     COORDS.columns = ['RA', 'DEC']
-#     print("done")
-#     print("-- Extracting CLASS table ... ", end = '', flush=True)
-#     CLASS = df['CLASS'].copy()
-#     print("done")
-#     print("-- Extracting AK table ... ", end = '', flush=True)
-#     AK = df['AK'].copy()
-#     print("done")
-#     # Drop these columns from the imported data frame, just to save memory
-#     df.drop(['SESNA_NAME','ra','dec','CLASS','AK'], axis=1, inplace=True)
-
-#     ## Define the catalog row number
-#     print("-- Building ROW table ... ", end = '', flush=True)
-#     ROW = pd.DataFrame(np.arange(0, df.shape[0]), columns=['ROWINDEX'])
-#     print("done")
-
-
-#     ## Extract the (raw) FNU values into a FNU data frame
-#     print("-- Extracting FNU table ... ", end = '', flush=True)
-#     extract_cols = ['FNU_' + i for i in filters_2MASS+filters_IRAC+filters_MIPS]
-#     FNU = df[extract_cols].copy()
-#     FNU.columns = filters_2MASS + filters_IRAC + filters_MIPS
-#     df.drop(extract_cols, axis=1, inplace=True)
-#     print("done")
-
-
-#     ## Extract the (raw) SIGMA_FNU values into a FNU data frame
-#     print("-- Extracting SIGMA_FNU table ... ", end = '', flush=True)
-#     extract_cols = ['SIGMA_FNU_' + i for i in filters_2MASS+filters_IRAC+filters_MIPS]
-#     SIGMA_FNU = df[extract_cols].copy()
-#     SIGMA_FNU.columns = filters_2MASS + filters_IRAC + filters_MIPS
-#     df.drop(extract_cols, axis=1, inplace=True)
-#     print("done")
-
-#     ## Initialize the ORIGIN table.
-#     ## This is used to record the type of measurement stored in the FNU table.
-#     ## It has columns J,H,K,...,24 that contain integer codes:
-#     ##   = 1: means FNU[i,<band>] is a valid observed flux measurement
-#     ##   = 2: means FNU[i,<band>] was replaced by a global survey upper bound.
-#     ##        NOTE: This can only occur for the 2MASS bands J,H,K.
-#     ##   = 90: means the value in FNU[i,<band>] is the corresponding DCOMP90_<band> value for source i
-#     ##   = 91: means the value in FNU[i,<band>] is the DCOMP90_<band> value for the 1st within-catalog nearest neighbor
-#     ##         (as measured by RA/DEC coords) that contained a valid DCOMP90_<band> measurement.
-#     ## Additionally, it has columns DCOMP90_NN_<band>, containing the integer row index from which the DCOMP90 value was pulled,
-#     ## when this occurs. Here, <band> can only be one of the IRAC or MIPS wavelengths, because the 2MASS J,H,K are only plugged with
-#     ## their upper bounds. Thus, if ORIGIN[i,'3_6'] = 91 (indicating that source i's FNU[i,'3_6'] value contains the DCOMP90_FNU_3_6 value from
-#     ## i's nearest-spatial-neighbor, ORIGIN[i, 'DCOMP90_NN_3_6'] contains the row index (in the same catalog) from where this value was pulled.
-#     ## This is just bookkeeping, in case we need to investigate from where the values for a specific source came.
-#     ##
-#     ## To start, initialize the J through 24 columns = 1.
-#     ## Below, we will do searching to determine where FNU is invalid, and overwrite these columns appropriately (=1, 2, 90, or 91)
-#     ORIGIN_FNU = pd.DataFrame(data = int(1), index=range(df.shape[0]), columns=filters_2MASS + filters_IRAC + filters_MIPS, dtype=int)
-#     ## Now, for the IRAC/MIPS bands, add integer columns to store the DCOMP90 nearest-neighbor index.
-#     ## My convention is -1 indicates no neighbor information was used.
-#     ## Anything >= 0 is the row index from which nearest-neighbor DCOMP90 info was taken.
-#     for filter in filters_IRAC + filters_MIPS:
-#         ORIGIN_FNU['DCOMP90_NN_' + filter] = int(-1)
-
-#     ## ** Loop over each filter, and modify the FNU, SIGMA_FNU, and ORIGIN_FNU tables accordingly
-
-#     ## Process the 2MASS filters
-#     UB_2MASS = {'J':0.763, 'H':0.934, 'KS':1.27} # hard-coded values from Rob for upper bounds of 2mass
-#     for filter in filters_2MASS:
-#         print("Processing filter %s ... " % filter, end = '', flush=True)
-#         # Determine where the flux is missing
-#         isna = (FNU[filter] == hdr['NAVALS'].loc['FNU_' + filter])
-#         # Overwrite missing fluxes with their global bounds
-#         FNU.loc[isna, filter] = UB_2MASS[filter]
-#         # Change the flux sigma = 1.0, required by sedfitter when bounds are given instead of fluxes
-#         # 1.0 tells sedfitter that the upper bound is hard, 0.9 would mean less hard, etc.
-#         SIGMA_FNU.loc[isna, filter] = 0.99 # 1.0
-#         # Set the origin = 2 (global upper bounds are used)
-#         ORIGIN_FNU.loc[isna,filter] = 2
-#         print("done")
-
-#     ## Process the IRAC+MIPS filters
-
-#     for filter in filters_IRAC + filters_MIPS:
-#         print("-- Processing FNU + SIGMA_FNU + ORIGIN_FNU for filter %s ... " % filter, end = '', flush=True)
-        
-#         # Determine where flux and dcomp90 values are invalid for this band
-#         fluxnaval = hdr['NAVALS'].loc['FNU_' + filter]
-#         isna_flux = FNU[filter] == fluxnaval
-#         dcompnaval = hdr['NAVALS'].loc['DCOMP90_FNU_' + filter]
-#         isna_dcomp = df['DCOMP90_FNU_' + filter] == dcompnaval
-
-#         ## Now work through each case, and make the appropriate changes to FNU, SIGMA_FNU, ORIGIN_FNU
-
-#         ## Case 0: FNU exists, so we use it.
-#         # This case is already taken care of above, since we just copied the existing flux & sigma values over
-#         # into these tables, and initialized the ORIGIN table to = 1 everywhere
-
-#         ## Case 1: FNU is missing, but a DCOMP90 value exists to plug it
-#         isna_w_dcomp = isna_flux & (~isna_dcomp)
-#         FNU.loc[isna_w_dcomp, filter] = df.loc[isna_w_dcomp, 'DCOMP90_FNU_' + filter].to_numpy()
-#         # Change the flux sigma = 1.0, required by sedfitter when bounds are given instead of fluxes
-#         # 1.0 tells sedfitter that the upper bound is hard, 0.9 would mean less hard, etc.
-#         SIGMA_FNU.loc[isna_w_dcomp, filter] = 0.99 # 1.0
-#         # Set the origin = 90 (existing dcomp upper bound is used)
-#         ORIGIN_FNU.loc[isna_w_dcomp,filter] = 90
-
-#         ## Case 2: FNU is missing, but a DCOMP90 value DOES NOT exist to plug it.
-#         isna_wo_dcomp = isna_flux & isna_dcomp
-#         # We need to find the nearest spatial neighbor of this source that does have a valid DCOMP90 value for this band.
-#         # We use the FAISS library to find these nearest neighbors
-#         faiss_index = faiss.IndexFlatL2(2) # 2, because we're searching the length=2 (RA,DEC) vector
-#         faiss_index.add(COORDS.loc[~isna_dcomp, ['RA','DEC']])
-#         _, nhbs = faiss_index.search(COORDS.loc[isna_wo_dcomp,['RA','DEC']], 1)
-#         nhbs = nhbs.reshape(-1)
-#         # Now that nearest neighbors are found, use their values to plug the missing FNU value
-#         FNU.loc[isna_wo_dcomp,filter] = df.loc[df[~isna_dcomp].index[nhbs], 'DCOMP90_FNU_' + filter].to_numpy()
-#         # Change the flux sigma = 1.0, required by sedfitter when bounds are given instead of fluxes
-#         # 1.0 tells sedfitter that the upper bound is hard, 0.9 would mean less hard, etc.
-#         SIGMA_FNU.loc[isna_wo_dcomp, filter] = 0.99 #1.0
-#         # Set the origin = 91 (nearest neighbor dcomp upper bound is used),
-#         # and record the row index of the nearest neighbor
-#         ORIGIN_FNU.loc[isna_wo_dcomp, filter] = int(91)
-#         ORIGIN_FNU.loc[isna_wo_dcomp, 'DCOMP90_NN_'+filter] = df[~isna_dcomp].index[nhbs].to_numpy()
-#         print("done")
-
-
-#     ## Format the (sorted) input distance range and number of sources in this catalog as dataframes
-#     distance_range_kpc = pd.Series(distance_range_kpc, name='DISTANCE_RANGE_KPC').sort_values().to_frame()
-#     NSOURCES = pd.Series([ID.shape[0]], name='NSOURCES').to_frame()
-
-#     ## Ready to return. If an output file path was given, we will construct an hdf5 file with tables
-#     ## whose names match the relevant info we formatted.
-#     if outpath_hdf5 is not None:
-#         # Create path if it doesn't exist
-#         if not os.path.exists(outpath_hdf5):
-#             os.makedirs(outpath_hdf5, exist_ok=True)
-#         # Build output filename for hdf5 file
-#         hdf5_fn = os.path.basename(path_catalog_ipac1_txt).strip(".txt")+"_SEDFIT_INPUT.hdf5"
-#         hdf5_fullpath = os.path.join(outpath_hdf5, hdf5_fn)
-#         warnings.filterwarnings('ignore', category=NaturalNameWarning)
-#         # Open hdf5 file, add tables
-#         with pd.HDFStore(hdf5_fullpath) as store:
-#             store.put('ID', ID, format='table', data_columns=True)
-#             store.put('COORDS', COORDS, format='table', data_columns=True)
-#             store.put('CLASS', CLASS, format='table', data_columns=True)
-#             store.put('AK', AK, format='table', data_columns=True)
-#             store.put('ROW', ROW, format='table', data_columns=True)
-#             store.put('FNU', FNU, format='table', data_columns=True)
-#             store.put('SIGMA_FNU', SIGMA_FNU, format='table', data_columns=True)
-#             store.put('ORIGIN_FNU', ORIGIN_FNU, format='table', data_columns=True)
-#             store.put('DISTANCE_RANGE_KPC', distance_range_kpc, format='table', data_columns=True)
-#             store.put('NSOURCES', NSOURCES, format='table', data_columns=True)
-#         print("-- HDF5 file saved %s ... " % hdf5_fullpath)
-#         return
-#     else:
-#         out = {"ID": ID, "COORDS": COORDS,
-#         "CLASS": CLASS, "AK": AK, "ROW": ROW, "FNU": FNU, "SIGMA_FNU": SIGMA_FNU, "ORIGIN_FNU": ORIGIN_FNU,
-#         "DISTANCE_RANGE_KPC": distance_range_kpc, "NSOURCES": NSOURCES}
-#         return out
-
 def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5=None):
     """
     Format SESNA catalog data for SED fitting and save to HDF5.
@@ -425,9 +172,10 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
         - COORDS: RA and DEC coordinates
         - CLASS: Source classifications
         - AK: A_K extinction values
-        - FNU: Flux densities in Jy for each band
-        - SIGMA_FNU: Flux uncertainties in Jy
+        - FNU: Flux densities in mJy for each band
+        - SIGMA_FNU: Flux uncertainties in mJy
         - ORIGIN_FNU: Origin codes for each flux measurement
+        - DCOMP90_FNU: Upper bound flux densities in mJy for each band
         - DISTANCE_RANGE_KPC: Distance range metadata
         - NSOURCES: Total number of sources
         
@@ -545,6 +293,10 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
     ## Anything >= 0 is the row index from which nearest-neighbor DCOMP90 info was taken.
     for filter in filters_IRAC + filters_MIPS:
         ORIGIN_FNU['DCOMP90_NN_' + filter] = int(-1)
+    ## Initialize the DCOMP90_FNU table to store all upper bounds used
+    ## For 2MASS bands: stores the global survey upper bounds
+    ## For IRAC/MIPS bands: stores the DCOMP90 value (either from the source itself or from nearest neighbor)
+    DCOMP90_FNU = pd.DataFrame(index=df.index, columns=filters_2MASS + filters_IRAC + filters_MIPS, dtype=float)
 
     ## ** Loop over each filter, and modify the FNU, SIGMA_FNU, and ORIGIN_FNU tables accordingly
 
@@ -561,6 +313,10 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
         SIGMA_FNU.loc[isna, filter] = 0.99 # 1.0
         # Set the origin = 2 (global upper bounds are used)
         ORIGIN_FNU.loc[isna, filter] = 2
+        # Store the upper bound: for detections, use max(survey_UB, actual_flux)
+        # For non-detections, use the survey UB
+        DCOMP90_FNU.loc[~isna, filter] = np.maximum(UB_2MASS[filter], FNU.loc[~isna, filter].to_numpy())
+        DCOMP90_FNU.loc[isna, filter] = UB_2MASS[filter]        
         print("done")
 
     ## Process the IRAC+MIPS filters
@@ -574,11 +330,27 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
         dcompnaval = hdr['NAVALS'].loc['DCOMP90_FNU_' + filter]
         isna_dcomp = df['DCOMP90_FNU_' + filter] == dcompnaval
 
-        ## Now work through each case, and make the appropriate changes to FNU, SIGMA_FNU, ORIGIN_FNU
+        ## Now work through each case, and make the appropriate changes to FNU, SIGMA_FNU, ORIGIN_FNU, DCOMP90_FNU
 
         ## Case 0: FNU exists, so we use it.
         # This case is already taken care of above, since we just copied the existing flux & sigma values over
         # into these tables, and initialized the ORIGIN table to = 1 everywhere
+        # In this case, DCOMP90 may or may not exist in the catalog, so we proceed with two cases: 
+        # Case 0A: FNU exists & DCOMP90 exists
+        isnotna_w_dcomp = ~isna_flux & ~isna_dcomp
+        DCOMP90_FNU.loc[isnotna_w_dcomp, filter] = df.loc[isnotna_w_dcomp, 'DCOMP90_FNU_' + filter].to_numpy()
+        # Case 0B: FNU exists & DCOMP90 does NOT exist. We will plug with the nearest spatial neighbor's DCOMP90 value
+        isnotna_wo_dcomp = ~isna_flux & isna_dcomp
+        # We use the FAISS library to find these nearest neighbors
+        faiss_index = faiss.IndexFlatL2(2) # 2, because we're searching the length=2 (RA,DEC) vector
+        faiss_index.add(COORDS.loc[~isna_dcomp, ['RA','DEC']].to_numpy())
+        _, nhbs = faiss_index.search(COORDS.loc[isnotna_wo_dcomp,['RA','DEC']], 1)
+        nhbs = nhbs.reshape(-1)
+         # Store the nearest neighbor DCOMP90 value
+        nn_dcomp_values = df.loc[df[~isna_dcomp].index[nhbs], 'DCOMP90_FNU_' + filter].to_numpy()
+        # Store the DCOMP90 values
+        #DCOMP90_FNU.loc[isnotna_wo_dcomp, filter] = nn_dcomp_values
+        DCOMP90_FNU.loc[isnotna_wo_dcomp, filter] = np.maximum(nn_dcomp_values, FNU.loc[isnotna_wo_dcomp, filter].to_numpy())
 
         ## Case 1: FNU is missing, but a DCOMP90 value exists to plug it
         isna_w_dcomp = isna_flux & (~isna_dcomp)
@@ -588,17 +360,21 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
         SIGMA_FNU.loc[isna_w_dcomp, filter] = 0.99 # 1.0
         # Set the origin = 90 (existing dcomp upper bound is used)
         ORIGIN_FNU.loc[isna_w_dcomp,filter] = 90
+        # Store the existing DCOMP90 value 
+        DCOMP90_FNU.loc[isna_w_dcomp, filter] = df.loc[isna_w_dcomp, 'DCOMP90_FNU_' + filter].to_numpy()
 
         ## Case 2: FNU is missing, but a DCOMP90 value DOES NOT exist to plug it.
         isna_wo_dcomp = isna_flux & isna_dcomp
         # We need to find the nearest spatial neighbor of this source that does have a valid DCOMP90 value for this band.
         # We use the FAISS library to find these nearest neighbors
         faiss_index = faiss.IndexFlatL2(2) # 2, because we're searching the length=2 (RA,DEC) vector
-        faiss_index.add(COORDS.loc[~isna_dcomp, ['RA','DEC']])
+        faiss_index.add(COORDS.loc[~isna_dcomp, ['RA','DEC']].to_numpy())
         _, nhbs = faiss_index.search(COORDS.loc[isna_wo_dcomp,['RA','DEC']], 1)
         nhbs = nhbs.reshape(-1)
+        # Store the nearest neighbor DCOMP90 value
+        nn_dcomp_values = df.loc[df[~isna_dcomp].index[nhbs], 'DCOMP90_FNU_' + filter].to_numpy()
         # Now that nearest neighbors are found, use their values to plug the missing FNU value
-        FNU.loc[isna_wo_dcomp,filter] = df.loc[df[~isna_dcomp].index[nhbs], 'DCOMP90_FNU_' + filter].to_numpy()
+        FNU.loc[isna_wo_dcomp,filter] = nn_dcomp_values
         # Change the flux sigma = 1.0, required by sedfitter when bounds are given instead of fluxes
         # 1.0 tells sedfitter that the upper bound is hard, 0.9 would mean less hard, etc.
         SIGMA_FNU.loc[isna_wo_dcomp, filter] = 0.99 #1.0
@@ -606,6 +382,8 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
         # and record the row index of the nearest neighbor
         ORIGIN_FNU.loc[isna_wo_dcomp, filter] = int(91)
         ORIGIN_FNU.loc[isna_wo_dcomp, 'DCOMP90_NN_'+filter] = df[~isna_dcomp].index[nhbs].to_numpy()
+        # Store the DCOMP90 values
+        DCOMP90_FNU.loc[isna_wo_dcomp, filter] = nn_dcomp_values
         print("done")
 
 
@@ -633,13 +411,15 @@ def format_SESNA_SEDFIT(path_catalog_ipac1_txt, distance_range_kpc, outpath_hdf5
             store.put('FNU', FNU, format='table', data_columns=True)
             store.put('SIGMA_FNU', SIGMA_FNU, format='table', data_columns=True)
             store.put('ORIGIN_FNU', ORIGIN_FNU, format='table', data_columns=True)
+            store.put('DCOMP90_FNU', DCOMP90_FNU, format='table', data_columns=True)
             store.put('DISTANCE_RANGE_KPC', distance_range_kpc, format='table', data_columns=True)
             store.put('NSOURCES', NSOURCES, format='table', data_columns=True)
         print("-- HDF5 file saved %s ... " % hdf5_fullpath)
         return
     else:
         out = {"ID": ID, "COORDS": COORDS,
-        "CLASS": CLASS, "AK": AK, "ROW": ROW, "FNU": FNU, "SIGMA_FNU": SIGMA_FNU, "ORIGIN_FNU": ORIGIN_FNU,
+        "CLASS": CLASS, "AK": AK, "ROW": ROW, 
+        "FNU": FNU, "SIGMA_FNU": SIGMA_FNU, "ORIGIN_FNU": ORIGIN_FNU, "DCOMP90_FNU": DCOMP90_FNU, 
         "DISTANCE_RANGE_KPC": distance_range_kpc, "NSOURCES": NSOURCES}
         return out
 
@@ -944,6 +724,9 @@ def read_SESNA_SEDFIT_INPUT(input_path_hdf5, startindex=None, endindex=None, tab
     
     return result
 
+
+## ======== Functions for reading my custom parameter files ========
+
 def read_fit_parm(filename):
     """
     Read a SED fitting parameter file with keyword-value pairs.
@@ -1141,6 +924,7 @@ def read_extinction_parm(info_file):
     return info
 
 
+## ======== Functions for writing / reading in SESNA SED Fit results ========
 def build_batchresults_fileroot(fitparm, startindex, endindex):
     """
     Build the file root (full path without extension) for batch results.
@@ -1289,7 +1073,6 @@ def save_batchfit_results_hdf5(arrays, fitparm, startindex, endindex):
                 f.create_dataset(key, data=arr, compression='gzip', compression_opts=4)
     
     return filepath
-
 
 def save_batch_failures(failed_sources, fitparm, startindex, endindex):
     """
@@ -1500,9 +1283,6 @@ def load_batchfit_results_as_dataframe(filepath, max_fit_rank=None):
         data[f'imp_flux_{band_name}'] = imputed_flux_2d[:, band_idx]
     
     return pd.DataFrame(data)
-
-
-
 
 def load_batchfit_dir(dirpaths, max_fit_rank=None, n_workers=None, verbose=True):
     """
@@ -1769,5 +1549,204 @@ def load_batchfit_dir(dirpaths, max_fit_rank=None, n_workers=None, verbose=True)
     return final_result
 
 
+## ======== Funtions for loading model SEDs in Robitaille's format (.fits files, with convolved filter sub-dir structure) ========
+## Model SED Loading Functions
+## Functions to be added to the existing io.py module.
+## These functions handle loading model SED data from FITS files.
 
+
+def load_model_seds(path, glob_pattern=None, aperture_index=0):
+    """
+    Load model SED(s) from FITS file(s).
+    
+    This is the main user-facing function for loading models. It handles:
+    - Single FITS file
+    - List of FITS files  
+    - Directory with glob pattern
+    
+    Parameters
+    ----------
+    path : str or list of str
+        One of:
+        - Path to single FITS file: 'path/to/model.fits'
+        - Path to directory: 'path/to/models/'
+        - List of FITS file paths: ['file1.fits', 'file2.fits', ...]
+    glob_pattern : str, optional
+        Glob pattern for matching files in directory (only used if path is a directory)
+        Examples: '*.fits', '*_sed.fits.gz', '*/flux.fits'
+        If None and path is a directory, defaults to '*.fits*'
+    aperture_index : int, optional
+        Which aperture to extract for multi-aperture models (default: 0)
+    
+    Returns
+    -------
+    models : dict
+        Dictionary with keys:
+        - 'wavelengths': Wavelength grid in microns (array)
+        - 'fluxes': Model fluxes, shape (N_models, N_wavelengths) (array)
+        - 'model_names': Model names (array)
+        - 'n_models': Number of models (int)
+        - 'n_wavelengths': Number of wavelength points (int)
+    
+    Examples
+    --------
+    # Single file
+    models = load_model_seds('path/to/flux.fits')
+    
+    # List of files (e.g., 18 YSO flux.fits files)
+    yso_paths = ['yso/dir1/flux.fits', 'yso/dir2/flux.fits', ...]
+    models = load_model_seds(yso_paths)
+    
+    # Directory with glob pattern (e.g., all SPS models)
+    models = load_model_seds('path/to/sps/seds/', glob_pattern='*_sed.fits.gz')
+    
+    # YSO subdirectories
+    models = load_model_seds('path/to/yso/', glob_pattern='*/flux.fits')
+    
+    # Access data
+    wavelengths = models['wavelengths']
+    fluxes = models['fluxes']
+    print(f"Loaded {models['n_models']} models")
+    """
+    # Case 1: List of paths provided
+    if isinstance(path, list):
+        fits_paths = path
+        print(f"Loading {len(fits_paths)} files from provided list")
+    
+    # Case 2: Single path - determine if file or directory
+    elif isinstance(path, str):
+        if os.path.isfile(path):
+            # Single file
+            fits_paths = [path]
+            print(f"Loading single file: {os.path.basename(path)}")
+        elif os.path.isdir(path):
+            # Directory - use glob pattern
+            if glob_pattern is None:
+                glob_pattern = '*.fits*'
+            full_pattern = os.path.join(path, glob_pattern)
+            fits_paths = sorted(glob(full_pattern))
+            if len(fits_paths) == 0:
+                raise ValueError(f"No files found matching pattern: {full_pattern}")
+            print(f"Found {len(fits_paths)} files in {path} matching pattern: {glob_pattern}")
+        else:
+            raise ValueError(f"Path does not exist: {path}")
+    else:
+        raise TypeError(f"path must be str or list, got {type(path)}")
+    
+    # Load first file
+    wavelengths, fluxes_list, names_list = _load_model_sed(fits_paths[0], aperture_index)
+    fluxes_all = [fluxes_list]
+    names_all = [names_list]
+    
+    # Load and concatenate remaining files if any
+    if len(fits_paths) > 1:
+        for fits_path in fits_paths[1:]:
+            wav_i, flux_i, names_i = _load_model_sed(fits_path, aperture_index)
+            
+            # Check wavelength consistency
+            if not np.allclose(wav_i, wavelengths):
+                print(f"WARNING: Wavelength grid differs in {fits_path}")
+                print(f"  Using wavelength grid from first file")
+            
+            fluxes_all.append(flux_i)
+            names_all.append(names_i)
+        
+        # Concatenate
+        fluxes = np.vstack(fluxes_all)
+        model_names = np.concatenate(names_all)
+        print(f"Loaded {len(fits_paths)} files with {len(model_names)} total models")
+    else:
+        fluxes = fluxes_list
+        model_names = names_list
+    
+    return {
+        'wavelengths': wavelengths,
+        'fluxes': fluxes,
+        'model_names': model_names,
+        'n_models': len(model_names),
+        'n_wavelengths': len(wavelengths)
+    }
+
+
+def _load_model_sed(fits_path, aperture_index=0):
+    """
+    Load model SED data from FITS file.
+    
+    Handles multiple formats:
+    - Format 1 (YSO/Galaxy): Multiple models in one file with 3D flux array
+    - Format 2 (SPS): Single model per file with flux in table columns
+    
+    Parameters
+    ----------
+    fits_path : str
+        Path to the FITS file containing model SEDs
+    aperture_index : int, optional
+        Which aperture to extract if multiple apertures exist (default: 0 for smallest)
+        Use -1 for largest aperture
+    
+    Returns
+    -------
+    wavelengths : np.ndarray
+        Wavelength grid in microns (length N_wav)
+    fluxes : np.ndarray
+        Model fluxes (LINEAR), shape (N_models, N_wav)
+    model_names : np.ndarray
+        Array of model names (length N_models) - useful for tracking
+    """
+    with fits.open(fits_path) as hdul:
+        
+        # Detect format by checking HDU names
+        hdu_names = [hdu.name for hdu in hdul]
+        
+        # Format 2: Single model per file (SPS format)
+        if 'SEDS' in hdu_names and 'WAVELENGTHS' in hdu_names:
+            # Single model format
+            wavelengths = hdul['WAVELENGTHS'].data['WAVELENGTH']
+            
+            # Extract model name from filename
+            model_name = os.path.basename(fits_path).replace('.fits.gz', '').replace('.fits', '')
+            model_names = np.array([model_name])
+            
+            # Get flux data from SEDS table (LINEAR flux)
+            fluxes = hdul['SEDS'].data['TOTAL_FLUX'][0]  # Shape: (N_wav,)
+            
+            # Reshape to (1, N_wav) for consistency
+            fluxes = fluxes.reshape(1, -1)
+        
+        # Format 1: Multiple models in one file (YSO/Galaxy format)
+        elif 'MODEL_NAMES' in hdu_names and 'VALUES' in hdu_names:
+            # Multiple models format
+            model_names = hdul['MODEL_NAMES'].data['MODEL_NAME']
+            wavelengths = hdul['SPECTRAL_INFO'].data['WAVELENGTH']
+            
+            # VALUES shape can vary - need to determine correct orientation
+            fluxes_raw = hdul['VALUES'].data
+            
+            # Determine the shape and transpose to (N_models, N_apertures, N_wavelengths)
+            if fluxes_raw.ndim == 3:
+                n_wav = len(wavelengths)
+                if fluxes_raw.shape[0] == n_wav:
+                    # Shape is (N_wavelengths, N_apertures, N_models) - transpose
+                    fluxes_3d = np.transpose(fluxes_raw, (2, 1, 0))
+                elif fluxes_raw.shape[2] == n_wav:
+                    # Shape is already (N_models, N_apertures, N_wavelengths)
+                    fluxes_3d = fluxes_raw
+                else:
+                    # Shape might be (N_models, N_wavelengths, N_apertures)
+                    fluxes_3d = np.transpose(fluxes_raw, (0, 2, 1))
+            else:
+                raise ValueError(f"Unexpected data shape: {fluxes_raw.shape}")
+            
+            # Extract specific aperture (or squeeze if only 1 aperture)
+            if fluxes_3d.shape[1] == 1:
+                # Single aperture - squeeze out that dimension
+                fluxes = fluxes_3d[:, 0, :]
+            else:
+                # Multiple apertures - extract the requested one
+                fluxes = fluxes_3d[:, aperture_index, :]
+        
+        else:
+            raise ValueError(f"Unrecognized FITS format. HDU names: {hdu_names}")
+    
+    return wavelengths, fluxes, model_names
 

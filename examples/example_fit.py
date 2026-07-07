@@ -23,6 +23,18 @@ source_curindex = source_startindex
 nsources_fitted = 0 
 
 ## Fitting loop 
+for src in srclist: # Iterate through the dataframe rows
+    
+    if (nsources_fitted % 10) == 0:
+        time = pd.Timestamp.now()
+        print(f"Fitting source at index:{source_curindex:10.0f} at time: {time}")
+
+    fitresultlist[nsources_fitted] = fit.fit_source(src, fitterlist, fitparm, extparm, fitparm['nkeep'])
+
+    # Increment 
+    source_curindex += 1
+    nsources_fitted += 1
+    
 ## Saving 
 fitarr = fit.aggregate_fitresults_to_arrays(fitresultlist)
 io.save_batchfit_results_hdf5(fitarr, fitparm, startindex=source_startindex, endindex=source_endindex)
