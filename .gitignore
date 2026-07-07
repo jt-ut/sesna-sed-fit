@@ -49,9 +49,9 @@ site/
 *.pyd
 
 # Downloaded datasets
-data/
-*.npz
-*.npy
+#data/
+#*.npz
+#*.npy
 
 # Archive / backup code
 src/sesnasedfit/archive/
